@@ -1,0 +1,26 @@
+fastapi
+uvicorn[standard]
+pydantic
+requests
+python-dotenv
+
+# Анализ данных и вычисления
+numpy
+pandas
+scipy
+pyarrow
+
+# Машинное обучение и ML-утилиты
+torch
+catboost
+scikit-learn
+
+# Веб/Дашборд/Визуализация
+streamlit
+streamlit-folium
+folium
+plotly
+
+# Дополнительно (по необходимости)
+# - Установите конкретные версии при развёртывании в продакшн
+# - Если используете GPU, установите подходящую сборку `torch` с поддержкой CUDA

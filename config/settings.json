@@ -1,0 +1,100 @@
+{
+  "residual_boost": {
+    "near_horizon_hours": 6.0,
+    "blend_window_steps": 4,
+    "bias_window_hours": 12.0
+  },
+  "model": {
+    "lookback_steps": 96,
+    "horizon_steps": 192,
+    "window_step": 24
+  },
+  "tft": {
+    "hidden_size": 64,
+    "num_heads": 2,
+    "dropout": 0.2,
+    "num_lstm_layers": 1
+  },
+  "anomaly": {
+    "temperature_range": [
+      -40.0,
+      44.0
+    ],
+    "humidity_range": [
+      0.0,
+      100.0
+    ],
+    "pressure_deviation": 50.0,
+    "uv_range": [
+      0.0,
+      15.0
+    ],
+    "lux_range": [
+      0.0,
+      65000.0
+    ],
+    "pm_range": [
+      0.0,
+      1000.0
+    ],
+    "wind_speed_range": [
+      0.0,
+      50.0
+    ],
+    "rain_range": [
+      0.0,
+      500.0
+    ],
+    "stuck_repeats": 48,
+    "max_rates": {
+      "temperature": 6.0,
+      "pressure": 10.0,
+      "humidity": 30.0
+    }
+  },
+  "paths": {
+    "raw_dir": "data/raw/stations",
+    "processed_dir": "data/processed",
+    "external_dir": "data/raw/external_forecasts",
+    "models_dir": "models",
+    "residual_models_dir": "models/residual_catboost",
+    "scalers_file": "config/scalers.json",
+    "pid_params_file": "config/pid_params.json",
+    "stations_config": "config/stations.json",
+    "model_filename": "tft_model.pth"
+  },
+  "training": {
+    "batch_size": 16,
+    "lr": 0.001,
+    "epochs": 15,
+    "patience": 8,
+    "target_weights": {
+      "uv": 0.15,
+      "lux": 0.15,
+      "temperature": 6.0,
+      "pressure": 0.25,
+      "humidity": 0.25,
+      "pm1": 0.15,
+      "pm2_5": 0.15,
+      "pm10": 0.15,
+      "rain": 6.0,
+      "wind_u": 0.15,
+      "wind_v": 0.15
+    },
+    "rain_event_weight": 0.5,
+    "rain_event_threshold": 0.1
+  },
+  "single_station": {
+    "enabled": false,
+    "station_id": 13
+  },
+  "google_sheets": {
+    "enabled": true,
+    "credentials_file": "config/google_service_account.json",
+    "forecasts_spreadsheet_id": "1ZU3o1xckvR22k1nJvKjx8SpedRbYoNBaIZ0rzIDe1IA",
+    "actuals_spreadsheet_id": "1EfLqHKwDLqj8EzfcORpvslJuOt6eYB7EeasiZ_b2Hmo",
+    "forecasts_sheet": "Forecasts",
+    "actuals_sheet": "Actuals",
+    "actuals_interval_hours": 2
+  }
+}
