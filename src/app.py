@@ -1,19 +1,19 @@
 """
 =============================================================================
-МОДУЛЬ: FastAPI Backend Server (app.py)
+MODULE: FastAPI Backend Server (app.py)
 -----------------------------------------------------------------------------
-НАЗНАЧЕНИЕ:
-Основной сервер API приложения прогнозирования погоды. Принимает запросы
-от веб-интерфейса Streamlit или внешних клиентов, опрашивает метеодатчики
-и выдает готовые гиперлокальные прогнозы погоды на 48 часов.
+PURPOSE:
+Core API backend server for weather forecasting pipeline. Handles requests
+from Streamlit web UI or external clients, polls meteorological sensors,
+and serves hyperlocal 48-hour weather forecasts.
 
-ОСНОВНЫЕ ФУНКЦИИ И АЛГОРИТМЫ:
-1. Загрузка весов гибридной модели TFT + CatBoost Residuals + RainCatBoost.
-2. Реализация фильтра Калмана (KalmanStateObserver) для очистки сенсорных
-   данных от шума перед расчетом невязок ошибки.
-3. Адаптивная PID-коррекция ошибки реального времени на ближнем горизонте (0-10ч).
-4. Линейное блендирование (10-14ч) с внешними синоптическими прогнозами Open-Meteo.
-5. Физическая валидация осадков (Physical Rain Guardrails) по дефициту точки росы.
+KEY FUNCTIONS & ALGORITHMS:
+1. Model loading for TFT + CatBoost Residuals + RainCatBoost ensemble.
+2. Kalman filter (KalmanStateObserver) implementation for sensor noise attenuation
+   prior to residual error calculation.
+3. Adaptive PID error compensation on near horizon (0-10h).
+4. Linear blending (10-14h) with external Open-Meteo synoptic forecasts.
+5. Physical rain validation (Physical Rain Guardrails) via dew point deficit.
 =============================================================================
 """
 
@@ -46,8 +46,8 @@ from inversion import apply_inversion_correction
 
 class KalmanStateObserver:
     """
-    2D Фильтр Калмана состояния [значение, скорость изменения (дрейф)].
-    Предназначен для очистки высокочастотного шума метеосенсоров перед вычислением невязок PID.
+    2D Kalman state filter [value, rate of change (drift)].
+    Designed to attenuate high-frequency sensor noise prior to PID residual calculation.
     """
 
     def __init__(self, process_noise_std: float = 0.05, measurement_noise_std: float = 0.15, dt: float = 1.0):
@@ -76,11 +76,11 @@ class KalmanStateObserver:
         y = np.array([[z]], dtype=np.float64) - (self.H @ x_pred)
         S = (self.H @ P_pred @ self.H.T) + self.R
         
-        # Z-score Anomaly Guardrail: Бракуем выброс датчика если |y| / sqrt(S) > max_z_score
+        # Z-score Anomaly Guardrail: Reject sensor spike if |y| / sqrt(S) > max_z_score
         innovation_std = np.sqrt(S[0, 0])
         z_score = abs(y[0, 0]) / max(innovation_std, 1e-6)
         if z_score > max_z_score:
-            # Игнорируем невалидный спайк датчика, используем априорный прогноз модели Калмана
+            # Reject invalid sensor spike, use a priori Kalman prediction state
             self.x = x_pred
             self.P = P_pred
             return float(self.x[0, 0]), float(self.x[1, 0])
@@ -129,15 +129,15 @@ MAX_CORRECTION_REAL = {
     "wind_v": 3.0
 }
 
-# 1. Загружаем настройки из центрального конфига
+# 1. Load settings from central config
 settings_file = resolve_path("config", "settings.json")
 if not os.path.exists(settings_file):
-    print("Критическая ошибка: config/settings.json не найден.")
+    print("Critical error: config/settings.json not found.")
     exit(1)
 
 settings = load_settings(settings_file)
 
-# Настройка путей из конфига
+# Setup paths from config
 STATIONS_CONFIG_PATH = resolve_path(settings["paths"]["stations_config"])
 MODEL_PATH = resolve_path(settings["paths"]["models_dir"], settings["paths"].get("model_filename", "tft_model.pth"))
 SCALERS_PATH = resolve_path(settings["paths"]["scalers_file"])
@@ -147,7 +147,7 @@ CACHE_DIR = resolve_path("data", "cache")
 
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-# Загружаем модель с учетом Attention-архитектуры
+# Load model with Attention architecture
 model = None
 model_status = {"loaded": False, "path": MODEL_PATH, "error": None}
 MODEL_MTIME = None
@@ -162,10 +162,10 @@ def load_rain_classifier():
         classifier = RainCatBoostClassifier(model_dir=resolve_path("models"))
         classifier.load()
         rain_classifier = classifier
-        print("[App] Автономная модель осадков RainCatBoostClassifier успешно загружена.")
+        print("[App] Standalone RainCatBoostClassifier loaded successfully.")
     except Exception as e:
         rain_classifier = None
-        print(f"[App] Предупреждение: не удалось загрузить RainCatBoostClassifier ({e}). Будет использован фолбэк.")
+        print(f"[App] Warning: failed to load RainCatBoostClassifier ({e}). Using fallback.")
 
 
 
@@ -174,7 +174,7 @@ def load_model() -> None:
     global MODEL_MTIME
     if not os.path.exists(MODEL_PATH):
         model_status = {"loaded": False, "path": MODEL_PATH, "error": "model file not found"}
-        print(f"Предупреждение: файл весов модели {MODEL_PATH} не найден.")
+        print(f"Warning: model weights checkpoint {MODEL_PATH} not found.")
         return
 
     try:
@@ -211,11 +211,11 @@ def load_model() -> None:
             MODEL_MTIME = os.path.getmtime(MODEL_PATH)
         except Exception:
             MODEL_MTIME = None
-        print("Успешно загружена TFT модель прогнозирования.")
+        print("Successfully loaded TFT forecasting model.")
     except Exception as exc:
         model = None
         model_status = {"loaded": False, "path": MODEL_PATH, "error": str(exc)}
-        print(f"Не удалось загрузить модель: {exc}")
+        print(f"Failed to load model: {exc}")
 
 
 def load_residual_model_bundle() -> None:
@@ -241,7 +241,7 @@ def startup_event():
 
 @app.post("/reload_model")
 def reload_model():
-    """Триггерно перезагрузить модель в памяти (вызывается тренером после сохранения)."""
+    """Trigger reload of model weights in memory (called after training)."""
     try:
         load_model()
         load_residual_model_bundle()
@@ -253,7 +253,7 @@ def reload_model():
 
 @app.get("/model_mtime")
 def get_model_mtime():
-    """Возвращает mtime текущего файла модели (float seconds) либо null."""
+    """Returns mtime of model file (float seconds) or None."""
     if os.path.exists(MODEL_PATH):
         try:
             return {"model_mtime": os.path.getmtime(MODEL_PATH)}
@@ -264,7 +264,7 @@ def get_model_mtime():
 
 @app.get("/pid_mtime")
 def get_pid_mtime():
-    """Возвращает время последнего сохранения PID-параметров."""
+    """Returns last modification timestamp of PID parameters."""
     if os.path.exists(PID_PARAMS_PATH):
         try:
             return {"pid_mtime": os.path.getmtime(PID_PARAMS_PATH)}
@@ -273,12 +273,12 @@ def get_pid_mtime():
     return {"pid_mtime": None}
 
 
-# Вспомогательные переменные
+# Helper functions and state variables
 target_cols = MODEL_TARGET_COLUMNS
 
 
 def load_pid_params_for_station(station_key: str) -> dict:
-    """Читает PID-параметры станции; при битом JSON возвращает пустой словарь."""
+    """Reads station PID parameters; on invalid JSON returns empty dict."""
     if not os.path.exists(PID_PARAMS_PATH):
         return {}
     try:
@@ -286,7 +286,7 @@ def load_pid_params_for_station(station_key: str) -> dict:
             data = json.load(pf)
         return data.get(station_key, {})
     except (json.JSONDecodeError, OSError) as err:
-        print(f"[Ошибка] Не удалось прочитать {PID_PARAMS_PATH}: {err}")
+        print(f"[Error] Failed to read {PID_PARAMS_PATH}: {err}")
         return {}
 
 
@@ -308,7 +308,7 @@ class ForecastItem(BaseModel):
     wind_gust: float | None = None
     frost_risk: bool | None = False
     fog_risk: bool | None = False
-    baro_status: str | None = "Стабильное"
+    baro_status: str | None = "Stable"
 
 
 class ForecastResponse(BaseModel):
@@ -330,13 +330,13 @@ class ForecastComponentsResponse(BaseModel):
     model_rain: list[float]
     model_pressure: list[float]
 
-# --- Улучшенные функции запросов к внешним сервисам ---
+# --- External Service Ingestion Helpers ---
 
 
 def fetch_live_sensors_with_fallback(generated_id: int) -> pd.DataFrame:
     """
-    Запрашивает последние 24 часа данных датчиков у API.
-    В случае сбоя переключается на локальный сырой файл в качестве имитации.
+    Queries the last 24h of sensor observations from API.
+    On failure, falls back to local raw JSON cache.
     """
     now = datetime.now()
     start_time = (now - timedelta(days=2)).strftime("%Y-%m-%d")
@@ -345,9 +345,9 @@ def fetch_live_sensors_with_fallback(generated_id: int) -> pd.DataFrame:
     url = f"{settings['paths'].get('climatenet_url', 'https://emvnh9buoh.execute-api.us-east-1.amazonaws.com')}/getData"
     params = {"device_id": generated_id, "start_time": start_time, "end_time": end_time}
 
-    # 1. Попытка запроса к живому API датчиков
+    # 1. Live sensor API request attempt
     try:
-        response = requests.get(url, params=params, timeout=5)  # короткий таймаут 5 секунд
+        response = requests.get(url, params=params, timeout=5)  # 5s timeout
         response.raise_for_status()
         res_json = response.json()
         keys = res_json.get("keys", [])
@@ -356,7 +356,7 @@ def fetch_live_sensors_with_fallback(generated_id: int) -> pd.DataFrame:
             df = pd.DataFrame(data, columns=keys)
             df["timestamp"] = pd.to_datetime(df["timestamp"], format="mixed")
 
-            # Приведение типов для предотвращения "Series cannot interpolate with object dtype"
+            # Type casting to prevent "Series cannot interpolate with object dtype"
             float_cols = [
                 "uv", "lux", "temperature", "pressure", "humidity",
                 "pm1", "pm2_5", "pm10", "wind speed", "rain"
@@ -369,26 +369,26 @@ def fetch_live_sensors_with_fallback(generated_id: int) -> pd.DataFrame:
 
             return df
     except Exception as e:
-        print(f"  [Предупреждение] Ошибка при запросе датчиков: {e}. Активация резервного сценария (локальный кэш).")
+        print(f"  [Warning] Sensor query error: {e}. Activating fallback cache.")
 
-    # 2. Фолбэк: Читаем сохраненный при сборе данных файл
+    # 2. Fallback: Read local sensor cache file
     local_file = os.path.join("data", "raw", "stations", f"station_{generated_id}.json")
     if os.path.exists(local_file):
         try:
             df = load_raw_station_json(local_file)
-            # Отрезаем последние 24 часа от последней имеющейся в файле даты
+            # Extract last 24h from latest available timestamp in file
             last_time = df["timestamp"].max()
             df_last_24h = df[df["timestamp"] >= (last_time - timedelta(hours=24))].copy()
             return df_last_24h
         except Exception as err:
-            print(f"  [Ошибка] Не удалось прочитать локальный кэш датчиков: {err}")
+            print(f"  [Error] Failed to read local sensor cache: {err}")
 
     return pd.DataFrame()
 
 
 def fetch_live_forecast_with_cache(lat: float, lon: float, station_id: int) -> pd.DataFrame:
     """
-    Запрашивает свежий внешний прогноз (Open-Meteo, Meteostat) с учетом настроек в settings.json.
+    Queries fresh external synoptic forecast (Open-Meteo, Meteostat) based on settings.json.
     """
     forecast_sources = settings.get("forecast_sources", {})
     use_open_meteo = forecast_sources.get("use_open_meteo", settings.get("use_open_meteo", True))
@@ -420,7 +420,7 @@ def fetch_live_forecast_with_cache(lat: float, lon: float, station_id: int) -> p
                     df_om = pd.DataFrame(hourly).rename(columns={"time": "timestamp"})
                     df_om["timestamp"] = pd.to_datetime(df_om["timestamp"], format="mixed")
         except Exception as e:
-            print(f"  [Предупреждение] Ошибка связи с Open-Meteo: {e}")
+            print(f"  [Warning] Connection error with Open-Meteo: {e}")
 
         if df_om.empty and os.path.exists(cache_file):
             try:
@@ -429,7 +429,7 @@ def fetch_live_forecast_with_cache(lat: float, lon: float, station_id: int) -> p
                 df_om = pd.DataFrame(cached).rename(columns={"time": "timestamp"})
                 df_om["timestamp"] = pd.to_datetime(df_om["timestamp"], format="mixed")
             except Exception as err:
-                print(f"  [Ошибка] Не удалось прочесть файл кэша прогнозов: {err}")
+                print(f"  [Error] Could not read forecast cache file: {err}")
 
     if use_meteostat:
         try:
@@ -438,11 +438,11 @@ def fetch_live_forecast_with_cache(lat: float, lon: float, station_id: int) -> p
             from data_fetcher import query_meteostat_api
             df_ms = query_meteostat_api(lat, lon, today_str, future_str)
         except Exception as e:
-            print(f"  [Предупреждение] Ошибка получения прогноза Meteostat: {e}")
+            print(f"  [Warning] Meteostat forecast error: {e}")
 
     return format_multimodel_external_df(df_om, df_ms)
 
-# --- Эндпоинты ---
+# --- Endpoints ---
 
 
 @app.get("/health")
@@ -460,9 +460,9 @@ def health_check():
 
 @app.get("/stations")
 def get_stations():
-    """Возвращает список станций, ограниченный режимом одной станции при необходимости."""
+    """Returns list of stations, constrained by single station mode if enabled."""
     if not os.path.exists(STATIONS_CONFIG_PATH):
-        raise HTTPException(status_code=404, detail="Конфигурация станций не найдена.")
+        raise HTTPException(status_code=404, detail="Station configuration not found.")
     with open(STATIONS_CONFIG_PATH, "r", encoding="utf-8") as f:
         stations = json.load(f)["stations"]
     return select_stations_for_run(stations, settings)
@@ -472,34 +472,34 @@ def get_stations():
 def get_forecast(station_id: int):
     global model
     if model is None:
-        raise HTTPException(status_code=500, detail="Модель прогнозирования не загружена на сервере.")
+        raise HTTPException(status_code=500, detail="Forecasting model is not loaded on server.")
 
-    # 1. Загрузка настроек метеостанции
+    # 1. Load weather station settings
     with open(STATIONS_CONFIG_PATH, "r", encoding="utf-8") as f:
         stations = json.load(f)["stations"]
     stations = select_stations_for_run(stations, settings)
     station_meta = next((s for s in stations if s["id"] == station_id), None)
     if not station_meta:
-        raise HTTPException(status_code=404, detail=f"Станция с ID {station_id} не найдена в конфиге.")
+        raise HTTPException(status_code=404, detail=f"Station with ID {station_id} not found in config.")
 
     gen_id = station_meta["generated_id"]
     lat = float(station_meta["latitude"])
     lon = float(station_meta["longitude"])
     elevation = float(station_meta["elevation_m"])
 
-    # 2. Запрос истории датчиков (с поддержкой фолбэка)
+    # 2. Query sensor history (with cache fallback)
     df_sensors = fetch_live_sensors_with_fallback(gen_id)
     if df_sensors.empty or len(df_sensors) < 10:
-        raise HTTPException(status_code=503, detail="Датчики ClimateNet недоступны, локальный архив отсутствует.")
+        raise HTTPException(status_code=503, detail="ClimateNet sensors unavailable and local archive is missing.")
 
-    # Предобработка сырой истории через единый пайплайн
+    # Preprocess raw sensor sequence via data pipeline
     df_sensors = prepare_feature_frame(df_sensors, station_meta)
 
-    # Оставляем последние 24 часа (96 шагов)
+    # Retain last 24 hours (96 steps)
     df_sensors = df_sensors.sort_values("timestamp")
     lookback = settings["model"]["lookback_steps"]
     if len(df_sensors) < lookback:
-        # Если строк меньше, чем требуется, построим регулярную сетку из 96 шагов, заканчивающуюся последним timestamp
+        # If rows are fewer than required, build regular grid of 96 steps ending at last timestamp
         last_ts = df_sensors["timestamp"].max() if not df_sensors.empty else datetime.now()
         timestamps = pd.date_range(end=last_ts, periods=lookback, freq="15min")
         df_sensors = df_sensors.set_index("timestamp").reindex(timestamps)
@@ -508,16 +508,16 @@ def get_forecast(station_id: int):
     else:
         df_sensors = df_sensors.tail(lookback)
 
-    # Защита: заменим inf/NaN на 0.0 для предотвращения появления NaN в выходах модели
+    # Guard: replace inf/NaN with 0.0 to prevent NaN propagation in model outputs
     df_sensors = df_sensors.replace([np.inf, -np.inf], np.nan)
     df_sensors = df_sensors.ffill().fillna(0.0)
 
-    # 3. Запрос прогноза Open-Meteo (с поддержкой кэша)
+    # 3. Query Open-Meteo NWP forecast (with cache fallback)
     df_forecast = fetch_live_forecast_with_cache(lat, lon, station_id)
     if df_forecast.empty:
-        raise HTTPException(status_code=503, detail="Внешний прогноз недоступен, кэш отсутствует.")
+        raise HTTPException(status_code=503, detail="External forecast unavailable and cache is missing.")
 
-    # Формируем словарь прогноза Open-Meteo по времени для блендинга осадков
+    # Index Open-Meteo forecast by timestamp for precipitation blending
     wapi_dict = {}
     if "timestamp" in df_forecast.columns:
         forecast_df_copy = df_forecast.copy()
@@ -525,11 +525,11 @@ def get_forecast(station_id: int):
         for _, f_row in forecast_df_copy.iterrows():
             t_str = f_row["timestamp"].strftime("%Y-%m-%d %H:00")
             precip = float(f_row.get("precipitation", 0.0))
-            # Прикидываем rain_probability на основе precipitation если явного поля нет
+            # Estimate rain_probability from precipitation amount if probability is missing
             prob = float(f_row.get("precipitation_probability", 100.0 if precip > 0.1 else 0.0))
             wapi_dict[t_str] = {"rain_probability": prob, "precipitation": precip}
 
-    # DIAGNOSTICS: логируем размеры и количество NaN в датасетах, чтобы понять отсутствие данных
+    # DIAGNOSTICS: log shapes and NaN counts in datasets for debugging
     try:
         print(f"[DEBUG] station_id={station_id} df_sensors.shape={df_sensors.shape}")
         print(f"[DEBUG] df_sensors NaN counts: {df_sensors.isna().sum().to_dict()}")
@@ -544,16 +544,16 @@ def get_forecast(station_id: int):
     except Exception as ex:
         print(f"[DEBUG] Error printing df_forecast diagnostics: {ex}")
 
-    # 4. Нормализация входов с помощью scalers.json
+    # 4. Normalize inputs using scalers.json
     if not os.path.exists(SCALERS_PATH):
-        raise HTTPException(status_code=500, detail="Файл скейлеров нормализации не найден.")
+        raise HTTPException(status_code=500, detail="Normalization scalers file not found.")
     with open(SCALERS_PATH, "r", encoding="utf-8") as sf:
         scalers = json.load(sf)
 
     station_key = f"station_{station_id}"
     if station_key not in scalers:
         raise HTTPException(
-            status_code=500, detail=f"Масштабирующие коэффициенты для станции {station_id} отсутствуют.")
+            status_code=500, detail=f"Scaling coefficients for station {station_id} not found in scalers configuration.")
 
     try:
         print(f"[DEBUG] scalers for {station_key} keys: {list(scalers[station_key].keys())[:30]}")
@@ -574,8 +574,8 @@ def get_forecast(station_id: int):
         normalize_columns=NORMALIZE_COLUMNS,
     )
 
-    # 5. Прогон через модель
-    # Перед прогоном убеждаемся, что входы — тензоры PyTorch на нужном устройстве
+    # 5. Model forward pass
+    # Ensure inputs are PyTorch tensors on correct device before forward pass
     if not isinstance(enc_t, torch.Tensor):
         enc_tensor = torch.from_numpy(enc_t).float().to(device)
     else:
@@ -591,7 +591,7 @@ def get_forecast(station_id: int):
         num_targets = len(MODEL_TARGET_COLUMNS)
         if raw_pred.ndim == 2 and raw_pred.shape[1] == num_targets * 3:
             raw_pred = raw_pred.reshape(raw_pred.shape[0], num_targets, 3)
-            preds_norm = raw_pred[:, :, 1]  # q0.5 (медиана)
+            preds_norm = raw_pred[:, :, 1]  # q0.5 (median)
         else:
             preds_norm = raw_pred
 
@@ -605,7 +605,7 @@ def get_forecast(station_id: int):
         residual_bundle=residual_bundle,
     )
 
-    # 6. PID Коррекция прогноза
+    # 6. PID forecast correction
     pid_params = load_pid_params_for_station(station_key)
 
     preds_corrected = preds_norm.copy()
@@ -618,7 +618,7 @@ def get_forecast(station_id: int):
     blend_scale = max(1.0, blend_window_steps / 2.0)
 
     for idx, var_name in enumerate(target_cols):
-        # rain_binary — логит классификатора: без scaler и без PID-коррекции
+        # rain_binary is classification logit: bypasses scaler and PID correction
         if var_name == "rain_binary":
             continue
 
@@ -637,39 +637,39 @@ def get_forecast(station_id: int):
         Kd_long = float(params.get("Kd_long", Kd_short))
         alpha_long = float(params.get("alpha_long", alpha_short))
 
-        # Weather Regime PID: Детекция резкого погодного фронта по изменению давления dP/dt
+        # Weather Regime PID: Detect sharp weather front via barometric tendency dP/dt
         is_front_active = False
         if "pressure_trend_3h" in df_sensors.columns:
             p_trend = float(df_sensors["pressure_trend_3h"].iloc[-1])
             is_front_active = abs(p_trend) > 1.5
 
         if is_front_active:
-            # На погодных фронтах повышаем Kp на 40% для мгновенного отклика PID
+            # On weather fronts, boost Kp by 40% for rapid PID response
             Kp_short *= 1.40
             Kd_short *= 1.25
 
-        # Отключаем PID для осадков во избежание «призраков дождя» после реальных ливней
+        # Disable PID for precipitation to prevent phantom rain persistence
         if var_name == "rain":
             Kp_short = Ki_short = Kd_short = 0.0
             Kp_long = Ki_long = Kd_long = 0.0
 
         int_limit = float(params.get("int_limit", 10.0))
 
-        # Фильтрация сенсорного шума Калманом (Kalman Observer) по всей 24-часовой истории
+        # Kalman observer noise filtering across 24h history
         kalman_obs = KalmanStateObserver(process_noise_std=0.05, measurement_noise_std=0.15)
         sensor_series = df_sensors_norm[var_name].values
         filtered_series, _ = kalman_obs.filter_series(sensor_series)
         smooth_actual_norm = float(filtered_series[-1])
 
-        # Ошибка на текущем шаге t0 относительно очищенного Калманом показания
+        # Error at step t0 relative to Kalman-filtered observation
         e_t0 = preds_norm[0, idx] - smooth_actual_norm
         if np.isnan(e_t0):
             e_t0 = 0.0
 
         e_t0 = float(np.clip(e_t0, -3.0, 3.0))
 
-        # Разделение ошибки на системный сдвиг (bias, 60%) и мгновенный шум (noise, 40%)
-        # Системный сдвиг гасится медленно (alpha_long), а шум — быстро (alpha_short)
+        # Decompose error into systematic bias (60%) and instantaneous noise (40%)
+        # Systematic bias decays slowly (alpha_long), noise decays rapidly (alpha_short)
         e_bias = 0.6 * e_t0
         e_noise = 0.4 * e_t0
 
@@ -679,7 +679,7 @@ def get_forecast(station_id: int):
         e_prev2 = e_t0
 
         for t in range(settings["model"]["horizon_steps"]):
-            # Плавный (sigmoid) переход параметров (bumpless transfer)
+            # Smooth sigmoid parameter transition (bumpless transfer)
             w = 1.0 / (1.0 + np.exp(-(t - split_step) / blend_scale))
 
             Kp = (1.0 - w) * Kp_short + w * Kp_long
@@ -696,14 +696,14 @@ def get_forecast(station_id: int):
             e_deriv = e_prev - e_prev2
 
             correction = Kp * e_prev + Ki * integral_sum + Kd * e_deriv
-            # Экспоненциальное затухание начальной ошибки по горизонту (Gain Decay):
+            # Exponential decay of initial error across forecast horizon (Gain Decay):
             decay_factor = float(np.exp(-t / 12.0))
             correction = correction * decay_factor
             correction = float(np.clip(correction, -max_corr_z, max_corr_z))
             preds_corrected[t, idx] = preds_norm[t, idx] - correction
             e_prev2 = e_prev
 
-    # 7. Денормализация
+    # 7. Denormalization
     preds_df = pd.DataFrame(preds_corrected, columns=target_cols)
     preds_df = inverse_scalers(preds_df, {col: scalers[station_key][col]
                                for col in target_cols if col in scalers[station_key]}, target_cols)
@@ -711,25 +711,25 @@ def get_forecast(station_id: int):
 
 
 
-    # 7.2. Каскадная физика Влажности RH(T) (Magnus-Tetens Equation Coupling)
-    # Корректируем влажность RH на основе давления насыщенного пара при T_final
+    # 7.2. Cascaded Humidity Physics RH(T) (Magnus-Tetens Equation Coupling)
+    # Adjust humidity RH based on saturation vapor pressure at T_final
     t_idx = target_cols.index("temperature")
     h_idx = target_cols.index("humidity")
 
     temp_c = preds_final[:, t_idx]
     humidity_raw = preds_final[:, h_idx]
-    # Аппроксимация точки росы из T и RH (формула Магнуса)
+    # Dew point approximation from T and RH (Magnus formula)
     dew_c = temp_c - ((100.0 - np.clip(humidity_raw, 1.0, 100.0)) / 5.0)
 
-    # Насыщенное давление пара e_s(T) и фактическое e(Td)
+    # Saturation vapor pressure e_s(T) and actual vapor pressure e(Td)
     es_t = 6.112 * np.exp((17.67 * temp_c) / (temp_c + 243.5))
     e_td = 6.112 * np.exp((17.67 * dew_c) / (dew_c + 243.5))
     rh_physical = np.clip((e_td / np.maximum(es_t, 1e-6)) * 100.0, 5.0, 100.0)
 
-    # Плавное взвешивание: 70% физическая влажность + 30% прямая модель
+    # Smooth blending: 70% physical humidity + 30% direct model
     preds_final[:, h_idx] = 0.7 * rh_physical + 0.3 * humidity_raw
 
-    # 7.3. Модель Ночной Инверсии на базе зенитного угла Солнца (Solar Zenith Angle Inversion)
+    # 7.3. Nocturnal Inversion Model based on Solar Zenith Angle
     station_lat = float(station_meta.get("latitude", 40.2))
     temp_before = preds_final[:, 2].copy()
     wind_u = preds_final[:, 9]
@@ -759,17 +759,17 @@ def get_forecast(station_id: int):
         cloud_cover=cloud_cover_vec,
     )
 
-    # 7.4. Тепловая Инерция Почвы (Solar Soil Inertia) - Плавный синусоидальный сдвиг пика 12:00-16:00
+    # 7.4. Solar Soil Thermal Inertia - Sinusoidal peak shift 12:00-16:00
     for t in range(len(preds_final)):
         fut_dt = future_timestamps[t]
         hour_frac = fut_dt.hour + fut_dt.minute / 60.0
         if 12.0 <= hour_frac <= 16.0:
-            # Плавная синусоида прогрева почвы с пиком в 14:00 (+0.4°C)
+            # Sinusoidal soil thermal heating peaking at 14:00 (+0.4°C)
             soil_inertia_boost = 0.4 * np.sin(np.pi * (hour_frac - 12.0) / 4.0)
             preds_final[t, 2] += float(soil_inertia_boost)
 
-    # 7.5. Physical Rate Clipping (Физические ограничения максимальной скорости прогрева/остывания)
-    # СТРОГО В КОНЦЕ ПОСТОБРАБОТКИ для устранения любых оставшихся ступенек: <= 0.875°C за 15 мин
+    # 7.5. Physical Rate Clipping (Max physical rate of heating/cooling constraints)
+    # Strictly at end of post-processing to eliminate steps: <= 0.875°C per 15 min
     max_step_delta = 0.875
     for t in range(1, len(preds_final)):
         delta = preds_final[t, 2] - preds_final[t - 1, 2]
@@ -783,7 +783,7 @@ def get_forecast(station_id: int):
         v = preds_final[t, 10]
         speed = float(np.sqrt(u**2 + v**2))
 
-        # 7.6. Динамика порывов ветра (Wind Gust Dynamics)
+        # 7.6. Wind Gust Dynamics
         temp_val = float(preds_final[t, 2])
         humidity_val = float(preds_final[t, 4])
         dew_val = temp_val - ((100.0 - humidity_val) / 5.0)
@@ -797,25 +797,25 @@ def get_forecast(station_id: int):
 
         rain_amount = float(np.clip(preds_final[t, 8], 0.0, 500.0))
 
-        # Расчет вероятности осадков из 12-й головы TFT
+        # Compute precipitation probability from 12th TFT target head
         rain_binary_logit = preds_final[t, 11]
         rain_prob = 1.0 / (1.0 + np.exp(-rain_binary_logit))
         rain_probability_pct = float(np.clip(rain_prob * 100.0, 0.0, 100.0))
 
-        # На дальнем горизонте (12-48ч) ансамблируем с Open-Meteo вероятностью
+        # On far horizon (12-48h), ensemble with Open-Meteo probability
         fut_time = future_timestamps[t]
         time_key = fut_time.strftime("%Y-%m-%d %H:00")
         if 'wapi_dict' in locals() and time_key in wapi_dict:
             om_prob = float(wapi_dict[time_key].get("rain_probability", 0.0))
-            if t >= 40: # С 10-го часа
+            if t >= 40: # From 10th hour onwards
                 w_om = min(1.0, (t - 40) / 16.0)
                 rain_probability_pct = (1.0 - w_om) * rain_probability_pct + w_om * om_prob
 
-        # 7.7. Индикаторы Риска Заморозков и Тумана (Frost & Fog Event Predictor)
+        # 7.7. Frost & Fog Risk Indicators
         frost_risk = bool(temp_val <= 2.0 and (temp_val - dew_val) <= 1.5)
         fog_risk = bool(humidity_val >= 94.0 and speed <= 1.2)
 
-        # 7.8. Барометрическая Тенденция (Barometric Trend Classification)
+        # 7.8. Barometric Trend Classification
         press_val = float(preds_final[t, 3])
         if t >= 12:
             p_diff_3h = press_val - float(preds_final[t - 12, 3])
@@ -823,19 +823,19 @@ def get_forecast(station_id: int):
             p_diff_3h = 0.0
             
         if p_diff_3h < -1.5:
-            baro_status = "Быстрое падение (Приближение шторма)"
+            baro_status = "Rapid Falling (Storm Approaching)"
         elif p_diff_3h > 1.5:
-            baro_status = "Быстрый рост (Улучшение погоды)"
+            baro_status = "Rapid Rising (Improving Weather)"
         else:
-            baro_status = "Стабильное"
+            baro_status = "Stable"
 
-        # Физические условия атмосферы (Physics Guardrails)
+        # Atmospheric Physics Guardrails
         step_temp = float(preds_final[t, 2])
         step_hum = float(preds_final[t, 4])
         dew_point_approx = step_temp - ((100.0 - step_hum) / 5.0)
         dew_deficit = step_temp - dew_point_approx
 
-        # Физический фильтр: дождь физически возможен при высокой влажности и малом дефиците точки росы
+        # Physics filter: rain is physically viable only under high humidity and low dew point deficit
         physics_favorable = (step_hum >= 70.0) and (dew_deficit <= 3.0)
         has_rain_amount = rain_amount > 0.1
 
@@ -874,11 +874,11 @@ def get_forecast(station_id: int):
         if not valid_t.empty:
             actual_temp = float(valid_t.iloc[-1])
 
-    # Извлекаем веса важности фичей из TFT внимания (Variable Selection Weights)
+    # Extract feature importance weights from TFT Variable Selection Networks
     feat_imp = None
     if hasattr(model, "last_enc_var_weights") and model.last_enc_var_weights is not None:
         try:
-            # (B, T, num_vars) -> усредняем по батчу и времени
+            # (B, T, num_vars) -> average across batch and time
             avg_w = model.last_enc_var_weights.mean(dim=(0, 1)).cpu().numpy()
             feat_imp = {col: round(float(w), 4) for col, w in zip(MODEL_SENSOR_COLUMNS, avg_w)}
         except Exception as ex:
@@ -897,19 +897,19 @@ def get_forecast(station_id: int):
 @app.get("/forecast_components/{station_id}", response_model=ForecastComponentsResponse)
 def get_forecast_components(station_id: int):
     """
-    Компоненты для графиков: сырой TFT до PID-коррекции.
-    Финальный PID-прогноз отдаёт /forecast.
+    Components for chart visualization: raw TFT prior to PID correction.
+    Final PID-corrected forecast is returned by /forecast.
     """
     global model
     if model is None:
-        raise HTTPException(status_code=500, detail="Модель прогнозирования не загружена.")
+        raise HTTPException(status_code=500, detail="Forecasting model is not loaded.")
 
     with open(STATIONS_CONFIG_PATH, "r", encoding="utf-8") as f:
         stations = json.load(f)["stations"]
     stations = select_stations_for_run(stations, settings)
     station_meta = next((s for s in stations if s["id"] == station_id), None)
     if not station_meta:
-        raise HTTPException(status_code=404, detail=f"Станция с ID {station_id} не найдена.")
+        raise HTTPException(status_code=404, detail=f"Station with ID {station_id} not found.")
 
     gen_id = station_meta["generated_id"]
     lat = float(station_meta["latitude"])
@@ -918,12 +918,12 @@ def get_forecast_components(station_id: int):
     # Fetch sensors and external forecast (same as main endpoint)
     df_sensors = fetch_live_sensors_with_fallback(gen_id)
     if df_sensors.empty or len(df_sensors) < 10:
-        raise HTTPException(status_code=503, detail="Датчики ClimateNet недоступны.")
+        raise HTTPException(status_code=503, detail="ClimateNet sensor stream unavailable.")
     df_sensors = prepare_feature_frame(df_sensors, station_meta)
     df_sensors = df_sensors.sort_values("timestamp")
     lookback = settings["model"]["lookback_steps"]
     if len(df_sensors) < lookback:
-        # Если строк меньше, чем требуется, построим регулярную сетку из 96 шагов, заканчивающуюся последним timestamp
+        # If rows are fewer than required, build regular grid of 96 steps ending at last timestamp
         last_ts = df_sensors["timestamp"].max() if not df_sensors.empty else datetime.now()
         timestamps = pd.date_range(end=last_ts, periods=lookback, freq="15min")
         df_sensors = df_sensors.set_index("timestamp").reindex(timestamps)
@@ -936,16 +936,16 @@ def get_forecast_components(station_id: int):
 
     df_forecast_ext = fetch_live_forecast_with_cache(lat, lon, station_id)
     if df_forecast_ext.empty:
-        raise HTTPException(status_code=503, detail="Внешний прогноз недоступен.")
+        raise HTTPException(status_code=503, detail="External NWP forecast unavailable.")
 
     if not os.path.exists(SCALERS_PATH):
-        raise HTTPException(status_code=500, detail="Файл скейлеров не найден.")
+        raise HTTPException(status_code=500, detail="Scalers configuration file not found.")
     with open(SCALERS_PATH, "r", encoding="utf-8") as sf:
         scalers = json.load(sf)
 
     station_key = f"station_{station_id}"
     if station_key not in scalers:
-        raise HTTPException(status_code=500, detail=f"Скейлеры для станции {station_id} отсутствуют.")
+        raise HTTPException(status_code=500, detail=f"Scalers for station {station_id} not found in scalers configuration.")
 
     station_scalers = scalers[station_key]
     enc_t, dec_t, future_timestamps = prepare_model_inputs(
@@ -965,7 +965,7 @@ def get_forecast_components(station_id: int):
         num_targets = len(MODEL_TARGET_COLUMNS)
         if raw_pred.ndim == 2 and raw_pred.shape[1] == num_targets * 3:
             raw_pred = raw_pred.reshape(raw_pred.shape[0], num_targets, 3)
-            preds_norm = raw_pred[:, :, 1]  # q0.5 (медиана)
+            preds_norm = raw_pred[:, :, 1]  # q0.5 (median)
         else:
             preds_norm = raw_pred
 

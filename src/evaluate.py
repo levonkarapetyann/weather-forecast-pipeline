@@ -1,14 +1,14 @@
 """
 =============================================================================
-МОДУЛЬ: Offline Model Evaluation & Metrics (evaluate.py)
+MODULE: Offline Model Evaluation & Metrics (evaluate.py)
 -----------------------------------------------------------------------------
-НАЗНАЧЕНИЕ:
-Скрипт расчёта оффлайн-метрик точности модели прогнозирования на тестовых выборках.
+PURPOSE:
+Offline accuracy benchmarking script evaluating model performance on held-out test splits.
 
-ОСНОВНЫЕ ФУНКЦИИ:
-1. Вычисление метрик MAE, RMSE, MAPE и Bias по метеостанциям и горизонтам прогнозирования.
-2. Детализация ошибки по времени суток (ночь, утро, день, вечер).
-3. Формирование сводного отчёта в консоли и сохранение результатов в JSON.
+KEY FUNCTIONS:
+1. Computes MAE, RMSE, MAPE, and Bias across stations and forecast horizons.
+2. Diurnal error breakdowns (night, morning, day, evening).
+3. Summary console reporting and detailed JSON artifact generation.
 =============================================================================
 """
 
@@ -37,12 +37,12 @@ HOUR_BUCKETS = {
 
 
 def de_normalize(data: np.ndarray, mean: float, std: float) -> np.ndarray:
-    """Обратное Z-score масштабирование"""
+    """Inverse Z-score scaling"""
     return data * std + mean
 
 
 def calculate_metrics(actual: np.ndarray, predicted: np.ndarray) -> Dict[str, float]:
-    """Расчет MAE, RMSE и Bias (смещения) с исключением NaN"""
+    """Compute MAE, RMSE, and Bias excluding NaN values"""
     mask = ~np.isnan(actual) & ~np.isnan(predicted)
     act_clean = actual[mask]
     pred_clean = predicted[mask]
@@ -58,7 +58,7 @@ def calculate_metrics(actual: np.ndarray, predicted: np.ndarray) -> Dict[str, fl
 
 
 def calculate_rain_classification_metrics(y_true: np.ndarray, y_prob: np.ndarray, threshold: float = 0.5) -> Dict[str, float]:
-    """Расчет метрик бинарной классификации осадков (ROC-AUC, F1-Score, Precision, Recall, Brier, CSI)."""
+    """Compute binary rain classification metrics (ROC-AUC, F1-Score, Precision, Recall, Brier, CSI)."""
     from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score, brier_score_loss
 
     mask = ~np.isnan(y_true) & ~np.isnan(y_prob)
@@ -88,7 +88,7 @@ def calculate_rain_classification_metrics(y_true: np.ndarray, y_prob: np.ndarray
 
 
 def main():
-    # Загружаем настройки с абсолютным разрешением пути
+    # Load settings with absolute path resolution
     with open(resolve_path("config", "settings.json"), "r", encoding="utf-8") as f:
         settings = json.load(f)
 
@@ -100,11 +100,11 @@ def main():
     stations_config = resolve_path(settings["paths"]["stations_config"])
 
     if not os.path.exists(model_path):
-        print(f"Ошибка: файл модели {model_path} не найден. Запустите сначала train.py")
+        print(f"Error: model file {model_path} not found. Please run train.py first")
         return
 
     if not os.path.exists(scalers_path):
-        print(f"Ошибка: скейлеры {scalers_path} не найдены.")
+        print(f"Error: scalers {scalers_path} not found.")
         return
 
     with open(stations_config, "r", encoding="utf-8") as f:
@@ -115,8 +115,8 @@ def main():
     with open(scalers_path, "r", encoding="utf-8") as f:
         scalers = json.load(f)
 
-    # Инициализация модели
-    device = torch.device("cpu")  # Оценку делаем на CPU
+    # Model initialization
+    device = torch.device("cpu")  # Perform evaluation on CPU
     tft_cfg = settings.get("tft", {})
     model = TFTForecaster(
         hidden_size=tft_cfg.get("hidden_size", 128),
@@ -135,7 +135,7 @@ def main():
 
     evaluation_results = {}
 
-    print("--- Запуск строгого тестирования модели на отложенной выборке (Test Split) ---")
+    print("--- Running strict model evaluation on held-out test split ---")
 
     for sf in station_files:
         sid = int(sf.split("_")[1])
@@ -154,39 +154,39 @@ def main():
         if not station_meta:
             continue
 
-        # Добавляем статические фичи
+        # Add static features
         df_features["latitude"] = float(station_meta["latitude"])
         df_features["longitude"] = float(station_meta["longitude"])
         df_features["elevation_m"] = float(station_meta["elevation_m"])
 
-        # Определяем тест-выборку
+        # Define test split
         min_ts = df_features["timestamp"].min()
         max_ts = df_features["timestamp"].max()
         days_span = (max_ts - min_ts).days
 
         if days_span < 30:
-            # Тестовый режим: берем последние 15% записей как тест
+            # Test mode: use last 15% records as test split
             n = len(df_features)
             idx_test_start = int(n * 0.85)
             df_test = df_features.iloc[idx_test_start:].copy()
         else:
-            # Рабочий режим: строго данные с 2026 года
+            # Operational mode: evaluation on recent observations
             df_test = df_features[df_features["timestamp"] >= "2026-01-01"].copy()
 
         if len(df_test) < (settings["model"]["lookback_steps"] + settings["model"]["horizon_steps"]):
-            print(f"  Станция {station_meta['name']}: недостаточно данных для тестирования. Пропуск.")
+            print(f"  Station {station_meta['name']}: insufficient data for testing. Skipping.")
             continue
 
-        # Применяем Z-score коэффициенты, сохраненные при обучении (scalers.json)
+        # Apply Z-score scaling parameters from scalers.json
         station_key = f"station_{sid}"
         if station_key not in scalers:
-            print(f"  Станция {station_meta['name']} ({sid}): скейлеры не найдены, пропускаем.")
+            print(f"  Station {station_meta['name']} ({sid}): scalers not found, skipping.")
             continue
 
         station_scalers = scalers[station_key]
         for col in target_cols:
             if col not in station_scalers:
-                print(f"  Станция {station_meta['name']} ({sid}): пропущен колонки {col} в скейлерах.")
+                print(f"  Station {station_meta['name']} ({sid}): missing column {col} in scalers.")
                 continue
             mean_v = station_scalers[col]["mean"]
             std_v = station_scalers[col]["std"]
@@ -194,13 +194,13 @@ def main():
                 std_v = 1.0
             df_test[col] = (df_test[col] - mean_v) / std_v
 
-        # Создаем Dataset и DataLoader
+        # Initialize Dataset and DataLoader
         dataset = ClimateDataset(df_test, df_forecast)
         loader = DataLoader(dataset, batch_size=len(dataset), shuffle=False)
 
         enc_x, dec_x, targets_norm = next(iter(loader))
 
-        # Получаем предсказания модели
+        # Generate model predictions
         with torch.no_grad():
             preds_norm = model(enc_x, dec_x).numpy()  # (N_windows, 192, 11)
             targets_norm = targets_norm.numpy()
@@ -220,22 +220,22 @@ def main():
 
         station_results = {}
 
-        print(f"\nСтанция: {station_meta['name']} (ID={sid}) | Тестовых окон: {preds_norm.shape[0]}")
+        print(f"\nStation: {station_meta['name']} (ID={sid}) | Test windows: {preds_norm.shape[0]}")
 
-        # Считаем ошибки по каждой переменной
+        # Compute error metrics for each variable
         for idx, var_name in enumerate(target_cols):
             mean_v = scalers[station_key][var_name]["mean"]
             std_v = scalers[station_key][var_name]["std"]
 
-            # Денормализуем предсказания и таргеты обратно в реальные единицы (°C, %, гПа)
+            # Denormalize predictions and ground truth to physical units (°C, %, hPa)
             preds_raw = de_normalize(preds_norm[:, :, idx], mean_v, std_v)
             targets_raw = de_normalize(targets_norm[:, :, idx], mean_v, std_v)
 
-            # 1. Общая ошибка по всему окну 48 часов
+            # 1. Overall error across the full 48h horizon
             overall_metrics = calculate_metrics(targets_raw, preds_raw)
 
-            # 2. Ошибки на конкретных шагах прогноза (6ч, 12ч, 24ч, 48ч)
-            # Шаг 24 (6ч), 48 (12ч), 96 (24ч), 192 (48ч)
+            # 2. Error at specific forecast lead times (6h, 12h, 24h, 48h)
+            # Step 24 (6h), 48 (12h), 96 (24h), 192 (48h)
             step_metrics = {}
             for step_name, step_idx in [("6h", 23), ("12h", 47), ("24h", 95), ("48h", 191)]:
                 step_act = targets_raw[:, step_idx]
@@ -257,7 +257,7 @@ def main():
                 "by_hour_of_day": hourly_metrics
             }
 
-            # Выводим отчет по важным переменным (температура, влажность, давление)
+            # Print summary for key variables (temperature, humidity, pressure)
             if var_name in ["temperature", "humidity", "pressure"]:
                 print(
                     f"  {var_name.capitalize():11s} | Overall MAE: {overall_metrics['mae']:.2f} | 6h MAE: {step_metrics['6h']['mae']:.2f} | 24h MAE: {step_metrics['24h']['mae']:.2f} | 48h MAE: {step_metrics['48h']['mae']:.2f}")
@@ -276,9 +276,9 @@ def main():
                 preds_half_inv = apply_inversion_correction(preds_raw, wind_u_raw, wind_v_raw, timestamps_matrix, lat_deg, scale=0.5)
                 preds_full_inv = apply_inversion_correction(preds_raw, wind_u_raw, wind_v_raw, timestamps_matrix, lat_deg, scale=1.0)
 
-                print("    🧪 Сравнение вариантов поправки 7.3 (Инверсия температуры):")
+                print("    🧪 Comparison of Block 7.3 Variants (Temperature Inversion):")
                 print("      ┌───────────────────────────┬──────────────┬──────────────┬──────────────┬──────────────┐")
-                print("      │ Вариант                   │ Ночь MAE     │ Ночь Bias    │ Общий MAE    │ Общий Bias   │")
+                print("      │ Variant                   │ Night MAE    │ Night Bias   │ Overall MAE  │ Overall Bias │")
                 print("      ├───────────────────────────┼──────────────┼──────────────┼──────────────┼──────────────┤")
 
                 night_mask = (hours_matrix >= 0) & (hours_matrix < 6)
@@ -294,12 +294,12 @@ def main():
                 print("      └───────────────────────────┴──────────────┴──────────────┴──────────────┴──────────────┘")
         evaluation_results[station_key] = station_results
 
-    # Сохраняем подробный JSON отчет
+    # Save detailed JSON report
     report_file = os.path.join(processed_dir, "evaluation_report.json")
     with open(report_file, "w", encoding="utf-8") as f:
         json.dump(evaluation_results, f, indent=2)
 
-    print(f"\nДетальный отчет об ошибках сохранен в: {report_file}")
+    print(f"\nDetailed error report saved to: {report_file}")
 
 
 if __name__ == "__main__":
@@ -307,7 +307,7 @@ if __name__ == "__main__":
 
 
 def run_benchmark() -> None:
-    """Вычисляет метрики точности внешнего прогноза Open-Meteo (Бенчмарк)."""
+    """Computes benchmark accuracy metrics for Open-Meteo synoptic forecasts."""
     from project_paths import load_settings, load_stations_config, resolve_path
 
     settings = load_settings()
@@ -320,7 +320,7 @@ def run_benchmark() -> None:
     stations = select_stations_for_run(stations, settings)
 
     results = []
-    print("=== Оценка точности провайдеров прогнозов (Open-Meteo vs Станции) ===")
+    print("=== Evaluating Forecast Accuracy (Open-Meteo vs Ground Truth Stations) ===")
 
     for station in stations:
         name = station["name"]
@@ -357,6 +357,6 @@ def run_benchmark() -> None:
         df_res = pd.DataFrame(results)
         bench_out = os.path.join(out_dir, "provider_benchmark.csv")
         df_res.to_csv(bench_out, index=False)
-        print(f"Бенчмарк успешно сохранен в: {bench_out}")
+        print(f"Benchmark report successfully saved to: {bench_out}")
     else:
-        print("Данные для расчета бенчмарка отсутствуют.")
+        print("No data available for benchmark calculation.")

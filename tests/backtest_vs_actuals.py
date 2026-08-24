@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
 =============================================================================
-МОДУЛЬ: 2-месячный скользящий слепой бэктест прогнозов (tests/backtest_vs_actuals.py)
+MODULE: 2-Month Rolling Blind Backtest (tests/backtest_vs_actuals.py)
 -----------------------------------------------------------------------------
-НАЗНАЧЕНИЕ:
-Симуляция «слепого» прогнозирования за 2 месяца (60 дней) до текущего дня.
-На каждом шаге окно датчиков обрезается строго до даты отсечки T, генерируется
-48-часовой прогноз (TFT + CatBoost Residuals), после чего полученные траектории
-сопоставляются с фактическими измерениями физических сенсоров станции.
+PURPOSE:
+Simulation of blind forecasting over 2 months (60 days) preceding current date.
+At each step, sensor window is truncated to cutoff date T,
+generating 48h forecast (TFT + CatBoost Residuals), compared directly
+against actual physical station observations.
 =============================================================================
 """
 
@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-# Настройка путей для импорта внутренних модулей src/
+# Setup paths for internal src/ module imports
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(TESTS_DIR)
 SRC_DIR = os.path.join(PROJECT_ROOT, "src")
@@ -54,12 +54,12 @@ except ImportError:
 
 
 def calculate_metrics_by_horizons(df: pd.DataFrame, horizons_hours: list = [6, 12, 18, 24, 36, 48]) -> dict:
-    """Вычисляет разбивающиеся по горизонтам (6ч, 12ч, 18ч, 24ч, 36ч, 48ч) метрики MAE, RMSE и Bias."""
+    """Computes horizon-sliced (6h, 12h, 18h, 24h, 36h, 48h) MAE, RMSE, and Bias metrics."""
     metrics_by_horizon = {}
     targets = ["temperature", "humidity", "pressure", "rain"]
 
     for h in horizons_hours:
-        max_steps = int(h * 4)  # 15-минутные шаги
+        max_steps = int(h * 4)  # 15-minute steps
         df_sub = df[df["horizon_step"] <= max_steps] if "horizon_step" in df.columns else df.copy()
         
         h_metrics = {}
@@ -86,7 +86,7 @@ def apply_pid_correction_to_df(
     station_name: str,
     pid_params_data: dict
 ) -> pd.DataFrame:
-    """Применяет PID-регулятор обратной связи из pid_params.json аналогично боевому app.py."""
+    """Applies PID feedback controller from pid_params.json identical to production app.py."""
     if df_pred.empty or df_history.empty or not pid_params_data:
         return df_pred
 
@@ -109,7 +109,7 @@ def apply_pid_correction_to_df(
             first_pred = float(df_out[var_name].iloc[0])
             err_0 = last_actual - first_pred
             
-            # PID поправка на первые 24 часа с экспедитивным затуханием
+            # PID correction over the first 24 hours with exponential decay
             horizon = len(df_out)
             integral = 0.0
             prev_err = err_0
@@ -123,7 +123,7 @@ def apply_pid_correction_to_df(
                 prev_err = err
                 
                 corr = Kp * err + Ki * integral + Kd * derivative
-                # Ограничиваем максимальную поправку PID до ±3.5°C
+                # Limit maximum PID correction to +/-3.5°C
                 corr = float(np.clip(corr, -3.5, 3.5))
                 corrections.append(corr)
 
@@ -133,9 +133,9 @@ def apply_pid_correction_to_df(
 
 
 def generate_plotly_report(df_res: pd.DataFrame, station_name: str, station_id: int, horizon_metrics: dict, output_path: str):
-    """Строит мультипанельный интерактивный график Plotly с разбивкой MAE по горизонтам."""
+    """Constructs multi-panel interactive Plotly chart with horizon MAE breakdowns."""
     if not _PLOTLY_AVAILABLE:
-        print("⚠️ Plotly не установлен. Установите 'pip install plotly' для генерации интерактивных графиков.")
+        print("⚠️ Plotly is not installed. Run 'pip install plotly' to generate charts.")
         return
 
     m6 = horizon_metrics.get("6h", {}).get("temperature", {}).get("MAE", 0.0)
@@ -147,7 +147,7 @@ def generate_plotly_report(df_res: pd.DataFrame, station_name: str, station_id: 
     m_press = horizon_metrics.get("48h", {}).get("pressure", {}).get("MAE", 0.0)
     m_rain = horizon_metrics.get("48h", {}).get("rain", {}).get("MAE", 0.0)
 
-    temp_title = f"Температура (°C) | MAE 6h: {m6:.2f}°C | 12h: {m12:.2f}°C | 24h: {m24:.2f}°C | 48h: {m48:.2f}°C"
+    temp_title = f"Temperature (°C) | MAE 6h: {m6:.2f}°C | 12h: {m12:.2f}°C | 24h: {m24:.2f}°C | 48h: {m48:.2f}°C"
 
     fig = make_subplots(
         rows=4, cols=1,
@@ -155,62 +155,62 @@ def generate_plotly_report(df_res: pd.DataFrame, station_name: str, station_id: 
         vertical_spacing=0.05,
         subplot_titles=(
             temp_title,
-            f"Влажность (%) | MAE: {m_hum:.2f}%",
-            f"Давление (гПа) | MAE: {m_press:.2f} hPa",
-            f"Осадки (мм) | MAE: {m_rain:.2f} mm",
+            f"Humidity (%) | MAE: {m_hum:.2f}%",
+            f"Pressure (hPa) | MAE: {m_press:.2f} hPa",
+            f"Precipitation (mm) | MAE: {m_rain:.2f} mm",
         )
     )
 
-    # 1. Температура
+    # 1. Temperature
     if "temperature_actual" in df_res.columns:
         fig.add_trace(go.Scatter(
             x=df_res["timestamp"], y=df_res["temperature_actual"],
-            name="Факт Датчика (T)", line=dict(color="#1f77b4", width=2)
+            name="Sensor Actual (T)", line=dict(color="#1f77b4", width=2)
         ), row=1, col=1)
     if "temperature_pred" in df_res.columns:
         fig.add_trace(go.Scatter(
             x=df_res["timestamp"], y=df_res["temperature_pred"],
-            name="Слепой Прогноз (T)", line=dict(color="#ff7f0e", width=2, dash="dash")
+            name="Blind Forecast (T)", line=dict(color="#ff7f0e", width=2, dash="dash")
         ), row=1, col=1)
 
-    # 2. Влажность
+    # 2. Humidity
     if "humidity_actual" in df_res.columns:
         fig.add_trace(go.Scatter(
             x=df_res["timestamp"], y=df_res["humidity_actual"],
-            name="Факт Датчика (RH)", line=dict(color="#2ca02c", width=2)
+            name="Sensor Actual (RH)", line=dict(color="#2ca02c", width=2)
         ), row=2, col=1)
     if "humidity_pred" in df_res.columns:
         fig.add_trace(go.Scatter(
             x=df_res["timestamp"], y=df_res["humidity_pred"],
-            name="Слепой Прогноз (RH)", line=dict(color="#d62728", width=2, dash="dash")
+            name="Blind Forecast (RH)", line=dict(color="#d62728", width=2, dash="dash")
         ), row=2, col=1)
 
-    # 3. Давление
+    # 3. Pressure
     if "pressure_actual" in df_res.columns:
         fig.add_trace(go.Scatter(
             x=df_res["timestamp"], y=df_res["pressure_actual"],
-            name="Факт Датчика (P)", line=dict(color="#9467bd", width=2)
+            name="Sensor Actual (P)", line=dict(color="#9467bd", width=2)
         ), row=3, col=1)
     if "pressure_pred" in df_res.columns:
         fig.add_trace(go.Scatter(
             x=df_res["timestamp"], y=df_res["pressure_pred"],
-            name="Слепой Прогноз (P)", line=dict(color="#8c564b", width=2, dash="dash")
+            name="Blind Forecast (P)", line=dict(color="#8c564b", width=2, dash="dash")
         ), row=3, col=1)
 
-    # 4. Осадки
+    # 4. Precipitation
     if "rain_actual" in df_res.columns:
         fig.add_trace(go.Bar(
             x=df_res["timestamp"], y=df_res["rain_actual"],
-            name="Факт Осадков", marker_color="#17becf", opacity=0.6
+            name="Precipitation Actual", marker_color="#17becf", opacity=0.6
         ), row=4, col=1)
     if "rain_pred" in df_res.columns:
         fig.add_trace(go.Scatter(
             x=df_res["timestamp"], y=df_res["rain_pred"],
-            name="Прогноз Осадков", line=dict(color="#e377c2", width=2)
+            name="Precipitation Forecast", line=dict(color="#e377c2", width=2)
         ), row=4, col=1)
 
     fig.update_layout(
-        title=f"2-Месячный Скользящий Слепой Бэктест | Станция {station_name} (ID {station_id})",
+        title=f"2-Month Rolling Blind Backtest | Station {station_name} (ID {station_id})",
         height=1000,
         showlegend=True,
         hovermode="x unified",
@@ -219,7 +219,7 @@ def generate_plotly_report(df_res: pd.DataFrame, station_name: str, station_id: 
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     fig.write_html(output_path)
-    print(f"📊 Сохранен интерактивный 2-месячный график: {output_path}")
+    print(f"📊 Saved interactive 2-month chart: {output_path}")
 
 
 def run_backtest_for_station(
@@ -233,7 +233,7 @@ def run_backtest_for_station(
     months: int = 2,
     step_hours: int = 24
 ) -> pd.DataFrame:
-    """Выполняет итеративный скользящий слепой бэктест для одной станции за N месяцев."""
+    """Executes iterative rolling blind backtest for a single station over N months."""
     sid = station["id"]
     gen_id = station["generated_id"]
     sname = station["name"]
@@ -248,8 +248,8 @@ def run_backtest_for_station(
 
     df_sensors_all = pd.DataFrame()
 
-    # 1. Запрос 100% свежих реальных данных напрямую через ClimateNet API
-    print(f"📡 Запрос свежих реальных данных из ClimateNet API для станции '{sname}' (device_id={gen_id})...")
+    # 1. Fetch fresh observations directly via ClimateNet API
+    print(f"📡 Fetching live observations from ClimateNet API for station '{sname}' (device_id={gen_id})...")
     now_dt = datetime.now()
     start_dt = now_dt - timedelta(days=int(months * 30) + 7)
     try:
@@ -258,15 +258,15 @@ def run_backtest_for_station(
             df_raw_api = pd.DataFrame(api_res["data"], columns=api_res["keys"])
             df_raw_api["timestamp"] = pd.to_datetime(df_raw_api["timestamp"], format="mixed")
             df_sensors_all = prepare_feature_frame(df_raw_api, station)
-            print(f"  ✅ Из ClimateNet API получено {len(df_sensors_all)} свежих записей реальных показаний.")
+            print(f"  ✅ Received {len(df_sensors_all)} fresh observation records from ClimateNet API.")
     except Exception as e:
-        print(f"  ⚠️ Не удалось загрузить данные из API: {e}. Переходим к локальным файлам...")
+        print(f"  ⚠️ Could not fetch from API: {e}. Falling back to local files...")
 
-    # 2. Фолбэк на локальный Parquet и сырой JSON
+    # 2. Fallback to local Parquet and raw JSON
     if df_sensors_all.empty and os.path.exists(parquet_file):
         try:
             df_sensors_all = pd.read_parquet(parquet_file)
-            print(f"  ℹ️ Загружено {len(df_sensors_all)} строк из локального parquet.")
+            print(f"  ℹ️ Loaded {len(df_sensors_all)} rows from local parquet.")
         except Exception:
             pass
 
@@ -281,10 +281,10 @@ def run_backtest_for_station(
                     else:
                         df_sensors_all = df_feat
         except Exception as e:
-            print(f"  ⚠️ Ошибка при чтении сырого JSON {raw_json_file}: {e}")
+            print(f"  ⚠️ Error reading raw JSON {raw_json_file}: {e}")
 
     if df_sensors_all.empty:
-        print(f"❌ Данные датчиков для станции {gen_id} не найдены.")
+        print(f"❌ Sensor observations for station {gen_id} not found.")
         return pd.DataFrame()
 
     df_sensors_all["timestamp"] = pd.to_datetime(df_sensors_all["timestamp"], format="mixed")
@@ -292,7 +292,7 @@ def run_backtest_for_station(
 
     df_ext_all = load_combined_external_forecast(raw_ext_dir, sid, settings)
     if df_ext_all.empty:
-        print(f"⚠️ Внешний прогноз для станции {sid} недоступен.")
+        print(f"⚠️ External forecast for station {sid} unavailable.")
         return pd.DataFrame()
 
     df_ext_all["timestamp"] = pd.to_datetime(df_ext_all["timestamp"], format="mixed")
@@ -306,18 +306,18 @@ def run_backtest_for_station(
 
     results_records = []
 
-    print(f"\n🚀 Запуск 2-месячного слепого бэктеста для '{sname}' ({min_ts.strftime('%Y-%m-%d')} → {max_ts.strftime('%Y-%m-%d')})...")
+    print(f"\n🚀 Running 2-month blind backtest for '{sname}' ({min_ts.strftime('%Y-%m-%d')} -> {max_ts.strftime('%Y-%m-%d')})...")
 
-    # Итерируемся по моменту отсечки T
+    # Iterate across cutoff timestamp T
     current_cutoff = min_ts
     while current_cutoff <= max_ts - timedelta(hours=12):
-        # 1. История датчиков строго до отсечки T (слепой доступ)
+        # 1. Sensor history strictly prior to cutoff T (blind)
         df_sensor_cutoff = df_sensors_all[df_sensors_all["timestamp"] <= current_cutoff].copy()
         if len(df_sensor_cutoff) < lookback_steps:
             current_cutoff += timedelta(hours=step_hours)
             continue
 
-        # 2. Внешний прогноз на 48 часов вперед от отсечки T
+        # 2. External NWP forecast for 48h forward from cutoff T
         future_cutoff_end = current_cutoff + timedelta(hours=int(horizon_steps * 15 / 60))
         df_ext_cutoff = df_ext_all[
             (df_ext_all["timestamp"] >= current_cutoff) &
@@ -353,7 +353,7 @@ def run_backtest_for_station(
                 else:
                     preds_norm = raw_pred
 
-            # Денормализация прогноза
+            # Denormalize forecast
             preds_df = pd.DataFrame(preds_norm, columns=MODEL_TARGET_COLUMNS)
             for col in MODEL_TARGET_COLUMNS:
                 if col in station_scalers:
@@ -361,7 +361,7 @@ def run_backtest_for_station(
                     s_v = float(station_scalers[col]["std"])
                     preds_df[col] = preds_df[col] * s_v + m_v
 
-            # Применение остаточного бустинга CatBoost при наличии
+            # Apply CatBoost residual booster if available
             if residual_bundle is not None:
                 try:
                     preds_df = apply_residual_correction(
@@ -376,14 +376,14 @@ def run_backtest_for_station(
                 except Exception:
                     pass
 
-            # Применение PID-регулятора обратной связи из pid_params.json (1-в-1 как в app.py)
+            # Apply PID feedback controller from pid_params.json (1:1 identical to app.py)
             if pid_params_data:
                 try:
                     preds_df = apply_pid_correction_to_df(preds_df, df_sensor_cutoff, sname, pid_params_data)
                 except Exception:
                     pass
 
-            # Применение экспоненциальной постобработки скользящего смещения (Rolling Bias)
+            # Apply exponential rolling bias correction
             if "temperature" in preds_df.columns and "temperature" in df_sensor_cutoff.columns:
                 try:
                     recent_actual = df_sensor_cutoff["temperature"].dropna().tail(24).values
@@ -398,7 +398,7 @@ def run_backtest_for_station(
                 except Exception:
                     pass
 
-            # Извлечение реальных показаний датчика для сравнения
+            # Extract ground truth observations for benchmark
             df_actuals_horizon = df_sensors_all[
                 df_sensors_all["timestamp"].isin(future_timestamps)
             ].set_index("timestamp")
@@ -431,7 +431,7 @@ def run_backtest_for_station(
                 results_records.append(rec)
 
         except Exception as e:
-            print(f"  ⚠️ Ошибка на шаге отсечки {current_cutoff}: {e}")
+            print(f"  ⚠️ Error at cutoff step {current_cutoff}: {e}")
 
         current_cutoff += timedelta(hours=step_hours)
 
@@ -439,19 +439,19 @@ def run_backtest_for_station(
         return pd.DataFrame()
 
     df_res = pd.DataFrame(results_records)
-    # Усредняем дубликаты по времени для красивого 2-месячного непрерывного графика
+    # Average time duplicates for continuous 2-month trajectory chart
     df_grouped = df_res.groupby("timestamp").mean(numeric_only=True).reset_index()
     return df_grouped
 
 
 def main():
-    parser = argparse.ArgumentParser(description="2-месячный скользящий слепой бэктест модели прогнозирования.")
-    parser.add_argument("--station-id", type=int, default=None, help="ID станции (по умолчанию: первая активная)")
-    parser.add_argument("--months", type=int, default=2, help="Длительность бэктеста в месяцах (по умолчанию: 2)")
-    parser.add_argument("--step-hours", type=int, default=24, help="Шаг смещения окна отсечки в часах (по умолчанию: 24)")
-    parser.add_argument("--max-horizon-hours", type=int, default=48, help="Максимальный горизонт прогнозирования для вычисления MAE в часах (например, 12)")
-    parser.add_argument("--mae-threshold", type=float, default=4.0, help="Порог MAE (°C), выше которого станция считается неисправной и обнуляется для итоговой сводки (по умолчанию: 4.0)")
-    parser.add_argument("--output-dir", default="tests/plots", help="Папка сохранения отчетов и графиков")
+    parser = argparse.ArgumentParser(description="2-Month rolling blind backtest for weather forecasting model.")
+    parser.add_argument("--station-id", type=int, default=None, help="Station ID (default: first active station)")
+    parser.add_argument("--months", type=int, default=2, help="Backtest duration in months (default: 2)")
+    parser.add_argument("--step-hours", type=int, default=24, help="Cutoff window stride in hours (default: 24)")
+    parser.add_argument("--max-horizon-hours", type=int, default=48, help="Maximum forecast horizon for MAE computation in hours (default: 48)")
+    parser.add_argument("--mae-threshold", type=float, default=4.0, help="MAE anomaly threshold (°C) above which station is flagged (default: 4.0)")
+    parser.add_argument("--output-dir", default="tests/plots", help="Directory to save output plots and reports")
     args = parser.parse_args()
 
     settings = load_settings()
@@ -469,7 +469,7 @@ def main():
     scalers_path = resolve_path(settings["paths"]["scalers_file"])
 
     if not os.path.exists(stations_config) or not os.path.exists(scalers_path):
-        print(f"❌ Файлы конфигурации не найдены: {stations_config} или {scalers_path}")
+        print(f"❌ Configuration files not found: {stations_config} or {scalers_path}")
         return
 
     with open(stations_config, "r", encoding="utf-8") as f:
@@ -483,15 +483,15 @@ def main():
         stations = [s for s in stations if s["id"] == args.station_id]
 
     if not stations:
-        print("❌ Активные станции не найдены.")
+        print("❌ Active stations not found.")
         return
 
-    # Загружаем модель TFT
+    # Load TFT model
     model_filename = settings["paths"].get("model_filename", "tft_model.pth")
     model_path = resolve_path(settings["paths"]["models_dir"], model_filename)
 
     if not os.path.exists(model_path):
-        print(f"❌ Модель TFT не найдена по пути: {model_path}")
+        print(f"❌ TFT Model checkpoint not found at: {model_path}")
         return
 
     tft_cfg = settings.get("tft", {})
@@ -510,18 +510,18 @@ def main():
         ).to(device)
         model.load_state_dict(state_dict)
         model.eval()
-        print(f"✅ Успешно загружена модель TFT из {model_path} (num_decoder_vars={num_dec_vars})")
+        print(f"✅ Successfully loaded TFT model from {model_path} (num_decoder_vars={num_dec_vars})")
     except Exception as e:
-        print(f"❌ Ошибка загрузки весов модели: {e}")
+        print(f"❌ Error loading model weights: {e}")
         return
 
-    # Попытка загрузить остаточный комплект CatBoost
+    # Attempt loading CatBoost residual bundle
     residual_bundle = None
     res_dir = resolve_path(settings["paths"].get("residual_models_dir", "models/residual_catboost"))
     if os.path.exists(res_dir):
         try:
             residual_bundle = ResidualModelBundle(models_dir=res_dir)
-            print("✅ Загружен комплект остаточного бустинга CatBoost.")
+            print("✅ Loaded CatBoost residual model bundle.")
         except Exception:
             pass
 
@@ -538,21 +538,21 @@ def main():
         if not df_backtest.empty:
             horizon_metrics = calculate_metrics_by_horizons(df_backtest, horizons_hours=[6, 12, 18, 24, 36, 48])
             
-            print(f"\n📊 Разбивка MAE Температуры по горизонтам для '{sname}':")
+            print(f"\n📊 Temperature MAE by Forecast Horizon for '{sname}':")
             st_horizons_temp_mae = {}
             for h_label, h_dict in horizon_metrics.items():
                 temp_m = h_dict.get("temperature", {})
                 t_mae = temp_m.get("MAE", 0.0)
                 t_rmse = temp_m.get("RMSE", 0.0)
                 t_bias = temp_m.get("Bias", 0.0)
-                print(f"  ⏱️ Горизонт {h_label:4s} | Temp MAE: {t_mae:5.3f}°C | RMSE: {t_rmse:5.3f}°C | Bias: {t_bias:+5.3f}°C")
+                print(f"  ⏱️ Horizon {h_label:4s} | Temp MAE: {t_mae:5.3f}°C | RMSE: {t_rmse:5.3f}°C | Bias: {t_bias:+5.3f}°C")
                 st_horizons_temp_mae[h_label] = t_mae
 
-            # Проверка порога аномалии (MAE > threshold)
+            # Anomaly threshold check (MAE > threshold)
             t_mae_24h = st_horizons_temp_mae.get("24h", 0.0)
             is_outlier = t_mae_24h > args.mae_threshold
             if is_outlier:
-                print(f"  ⚠️ СТАНЦИЯ ОТФИЛЬТРОВАНА: MAE 24h ({t_mae_24h:.2f}°C) > {args.mae_threshold}°C. Принято за 0.0 для итоговой сводки.")
+                print(f"  ⚠️ STATION FILTERED: MAE 24h ({t_mae_24h:.2f}°C) > {args.mae_threshold}°C. Reset to 0.0 for summary.")
 
             all_station_results.append({
                 "id": sid,
@@ -568,28 +568,28 @@ def main():
             out_plot = os.path.join(args.output_dir, f"backtest_{args.months}months_station_{sid}.html")
             generate_plotly_report(df_backtest, sname, sid, horizon_metrics, out_plot)
 
-    # Итоговый вывод сводки по всем станциям
+    # Final summary across all stations
     if all_station_results:
         print("\n" + "=" * 70)
-        print(f"📈 СВОДНЫЙ ОТЧЕТ MAE ПО ВСЕМ СТАНЦИЯМ (Порог отсечения: > {args.mae_threshold}°C)")
+        print(f"📈 SUMMARY MAE REPORT ACROSS ALL STATIONS (Threshold: > {args.mae_threshold}°C)")
         print("=" * 70)
         
         valid_stations = [s for s in all_station_results if not s["is_outlier"]]
         outlier_stations = [s for s in all_station_results if s["is_outlier"]]
 
-        print(f"Всего станций: {len(all_station_results)} | Валидных: {len(valid_stations)} | Отфильтровано как 0: {len(outlier_stations)}")
+        print(f"Total stations: {len(all_station_results)} | Valid: {len(valid_stations)} | Filtered as 0: {len(outlier_stations)}")
         
         if outlier_stations:
-            print("\nОтфильтрованные неисправные станции (приняты за 0.0):")
+            print("\nFiltered anomalous stations (reset to 0.0):")
             for os_st in outlier_stations:
-                print(f"  ❌ {os_st['name']} (ID {os_st['id']}): Фактический MAE 24h = {os_st['raw_horizons'].get('24h', 0.0):.2f}°C")
+                print(f"  ❌ {os_st['name']} (ID {os_st['id']}): Raw MAE 24h = {os_st['raw_horizons'].get('24h', 0.0):.2f}°C")
 
         horizons = ["6h", "12h", "18h", "24h", "36h", "48h"]
-        print("\nИтоговый средний MAE Температуры по всем станциям:")
+        print("\nFinal Mean Temperature MAE across all stations:")
         for h in horizons:
             mae_with_zeros = sum(st["horizons"].get(h, 0.0) for st in all_station_results) / len(all_station_results)
             mae_valid_only = sum(st["raw_horizons"].get(h, 0.0) for st in valid_stations) / len(valid_stations) if valid_stations else 0.0
-            print(f"  ⏱️ Горизонт {h:4s} | MAE (со сбросом неисправных в 0.0): {mae_with_zeros:5.3f}°C | (Только качественные станции): {mae_valid_only:5.3f}°C")
+            print(f"  ⏱️ Horizon {h:4s} | MAE (with reset zeros): {mae_with_zeros:5.3f}°C | (Valid stations only): {mae_valid_only:5.3f}°C")
         print("=" * 70)
 
 

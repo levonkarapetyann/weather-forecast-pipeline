@@ -1,16 +1,16 @@
 """
 =============================================================================
-МОДУЛЬ: Feature Engineering & Preprocessing Pipeline (data_pipeline.py)
+MODULE: Feature Engineering & Preprocessing Pipeline (data_pipeline.py)
 -----------------------------------------------------------------------------
-НАЗНАЧЕНИЕ:
-Центральный конвейер обработки данных и расчета термодинамических фичей.
+PURPOSE:
+Central data processing pipeline and thermodynamic feature engineering engine.
 
-ОСНОВНЫЕ ФУНКЦИИ И РАСЧЕТЫ:
-1. Вычисление физических показателей атмосфера: точка росы (dew_point),
-   дефицит точки росы, упругость водяного пара (VPD), эквивалентно-потенциальная
-   температура (theta_e) и температура влажного термометра.
-2. Масштабирование данных (MinMax / Standard Scalers) по каждой метеостанции.
-3. Фильтрация и выбор активных станций для обучений и прогнозов.
+KEY FUNCTIONS & COMPUTATIONS:
+1. Atmospheric thermodynamic indices: dew point, dew point deficit,
+   vapor pressure deficit (VPD), equivalent potential temperature (theta_e),
+   and wet-bulb temperature approximation.
+2. Per-station data scaling (Standard / Robust Scalers).
+3. Active station filtering and stratified subset selection.
 =============================================================================
 """
 
@@ -31,8 +31,8 @@ CARDINAL_TO_DEGREES = {
 
 def convert_wind_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Переводит категориальное направление ветра в градусы и раскладывает
-    вектор ветра на составляющие wind_u и wind_v.
+    Converts wind direction to degrees and decomposes the wind vector
+    into orthogonal components wind_u and wind_v.
     """
     df_feat = df.copy()
     if "wind direction" not in df_feat.columns or "wind speed" not in df_feat.columns:
@@ -45,13 +45,13 @@ def convert_wind_features(df: pd.DataFrame) -> pd.DataFrame:
     df_feat["wind_u"] = speed * np.sin(rads)
     df_feat["wind_v"] = speed * np.cos(rads)
 
-    # Удаляем старые признаки ветра
+    # Remove legacy wind direction columns
     df_feat = df_feat.drop(columns=["wind direction", "wind speed"])
     return df_feat
 
 
 def add_wind_scalar(df: pd.DataFrame) -> pd.DataFrame:
-    """Вычисляет скалярную скорость ветра wind_speed_scalar из wind_u и wind_v."""
+    """Computes scalar wind speed wind_speed_scalar from orthogonal wind_u and wind_v."""
     df_feat = df.copy()
     if "wind_u" in df_feat.columns and "wind_v" in df_feat.columns:
         df_feat["wind_speed_scalar"] = np.sqrt(df_feat["wind_u"]**2 + df_feat["wind_v"]**2)
@@ -61,21 +61,21 @@ def add_wind_scalar(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_cyclical_time_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Добавляет синусы и косинусы для времени суток, месяца и дня года"""
+    """Adds cyclical sine and cosine harmonics for time of day, month, and day of year."""
     df_feat = df.copy()
     timestamps = df_feat["timestamp"]
 
-    # Время суток (24 часа)
+    # Time of day (24-hour diurnal cycle)
     hour = timestamps.dt.hour + timestamps.dt.minute / 60.0
     df_feat["hour_sin"] = np.sin(2 * np.pi * hour / 24.0)
     df_feat["hour_cos"] = np.cos(2 * np.pi * hour / 24.0)
 
-    # Месяц (12 месяцев)
+    # Month of year (12-month annual cycle)
     month = timestamps.dt.month - 1 + timestamps.dt.day / 31.0
     df_feat["month_sin"] = np.sin(2 * np.pi * month / 12.0)
     df_feat["month_cos"] = np.cos(2 * np.pi * month / 12.0)
 
-    # День года (365 дней)
+    # Day of year (365-day seasonal cycle)
     doy = timestamps.dt.dayofyear - 1
     df_feat["doy_sin"] = np.sin(2 * np.pi * doy / 365.0)
     df_feat["doy_cos"] = np.cos(2 * np.pi * doy / 365.0)
@@ -84,7 +84,7 @@ def add_cyclical_time_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def compute_dew_point(temp: pd.Series, rh: pd.Series) -> pd.Series:
-    """Магнус-Тетенс формула для расчета точки росы"""
+    """Magnus-Tetens formula for dew point calculation."""
     beta = 17.67
     lam = 243.5
     rh_clipped = rh.clip(1.0, 100.0)
@@ -95,7 +95,7 @@ def compute_dew_point(temp: pd.Series, rh: pd.Series) -> pd.Series:
 
 
 def add_vapor_pressure_deficit(df: pd.DataFrame) -> pd.DataFrame:
-    """Рассчитывает дефицит упругости водяного пара (VPD) в кПа."""
+    """Computes Vapor Pressure Deficit (VPD) in kPa."""
     df_feat = df.copy()
     if "temperature" in df_feat.columns and "humidity" in df_feat.columns:
         T = df_feat["temperature"]
@@ -108,7 +108,7 @@ def add_vapor_pressure_deficit(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_equivalent_potential_temperature(df: pd.DataFrame) -> pd.DataFrame:
-    """Рассчитывает эквивалентно-потенциальную температуру (theta_e) в °C."""
+    """Computes equivalent potential temperature (theta_e) in °C."""
     df_feat = df.copy()
     if "temperature" in df_feat.columns:
         T_k = df_feat["temperature"] + 273.15
@@ -122,7 +122,7 @@ def add_equivalent_potential_temperature(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_pressure_trend(df: pd.DataFrame) -> pd.DataFrame:
-    """Рассчитывает тренд давления за последние 3 часа (12 шагов по 15 мин)"""
+    """Computes barometric pressure trend over the last 3 hours (12 steps of 15 min)."""
     df_feat = df.copy()
     if "pressure" in df_feat.columns:
         df_feat["pressure_trend_3h"] = df_feat["pressure"].diff(12).fillna(0.0)
@@ -130,7 +130,7 @@ def add_pressure_trend(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_temperature_derivatives(df: pd.DataFrame) -> pd.DataFrame:
-    """Рассчитывает производные температуры: тренды 1ч, 3ч и ускорение 1ч."""
+    """Computes temperature derivatives: 1h, 3h trends, and 1h thermal acceleration."""
     df_feat = df.copy()
     if "temperature" in df_feat.columns:
         df_feat["temp_trend_1h"] = df_feat["temperature"].diff(4).fillna(0.0)
@@ -140,7 +140,7 @@ def add_temperature_derivatives(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_inversion_risk(df: pd.DataFrame) -> pd.DataFrame:
-    """Рассчитывает индекс риска температурной инверсии (слабый ветер + ночное выхолаживание + ясное небо)."""
+    """Computes nocturnal temperature inversion risk index (calm wind + nocturnal radiation cooling + clear skies)."""
     df_feat = df.copy()
     if "hour_cos" in df_feat.columns:
         wind_speed = df_feat.get("wind_speed_scalar", 0.0)
@@ -155,7 +155,7 @@ def add_inversion_risk(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_solar_zenith_angle(df: pd.DataFrame, station_lat: float = 40.2) -> pd.DataFrame:
-    """Рассчитывает зенитный угол солнца и потенциальную солнечную радиацию."""
+    """Computes solar zenith angle and clear-sky potential solar radiation."""
     df_feat = df.copy()
     timestamps = df_feat["timestamp"]
     doy = timestamps.dt.dayofyear
@@ -174,7 +174,7 @@ def add_solar_zenith_angle(df: pd.DataFrame, station_lat: float = 40.2) -> pd.Da
 
 
 def add_sky_clearness(df: pd.DataFrame) -> pd.DataFrame:
-    """Рассчитывает индекс прозрачности атмосферы (sky_clearness) по люксметру и инсоляции."""
+    """Computes atmospheric transparency index (sky_clearness) from lux meter readings and theoretical insolation."""
     df_feat = df.copy()
     if "lux" in df_feat.columns and "potential_solar_radiation" in df_feat.columns:
         lux = df_feat["lux"].fillna(0.0).clip(lower=0.0)
@@ -189,7 +189,7 @@ def add_sky_clearness(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_pm_moisture_index(df: pd.DataFrame) -> pd.DataFrame:
-    """Рассчитывает индекс микрочастиц и зарождения тумана при RH > 80%."""
+    """Computes particulate hygroscopic index and fog nucleation potential when RH > 80%."""
     df_feat = df.copy()
     if "pm2_5" in df_feat.columns and "pm10" in df_feat.columns and "humidity" in df_feat.columns:
         pm2_5 = df_feat["pm2_5"].fillna(0.0).clip(lower=0.0)
@@ -204,7 +204,7 @@ def add_pm_moisture_index(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_dry_spell_counter(df: pd.DataFrame) -> pd.DataFrame:
-    """Рассчитывает количество последовательных шагов без осадков (steps_since_last_rain)."""
+    """Computes consecutive dry step intervals (steps_since_last_rain)."""
     df_feat = df.copy()
     if "rain" in df_feat.columns:
         rain_vals = pd.to_numeric(df_feat["rain"], errors="coerce").fillna(0.0)
@@ -218,7 +218,7 @@ def add_dry_spell_counter(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_humidity_trend(df: pd.DataFrame) -> pd.DataFrame:
-    """Рассчитывает тренд влажности за последние 3 часа (12 шагов по 15 мин)"""
+    """Computes relative humidity trend over the last 3 hours (12 steps of 15 min)."""
     df_feat = df.copy()
     if "humidity" in df_feat.columns:
         df_feat["humidity_trend_3h"] = df_feat["humidity"].diff(12).fillna(0.0)
@@ -226,7 +226,7 @@ def add_humidity_trend(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_rain_accumulation(df: pd.DataFrame) -> pd.DataFrame:
-    """Добавляет накопленную сумму осадков за 24ч (96 шагов) и 72ч (288 шагов)."""
+    """Adds cumulative precipitation over 24h (96 steps) and 72h (288 steps)."""
     df_feat = df.copy()
     if "rain" in df_feat.columns:
         rain_series = pd.to_numeric(df_feat["rain"], errors="coerce").fillna(0.0)
@@ -236,7 +236,7 @@ def add_rain_accumulation(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_lag_features(df: pd.DataFrame, columns: List[str]) -> pd.DataFrame:
-    """Создает лаги: 1 час назад (4 шага), 24 часа назад (96 шагов) и 7 дней назад (672 шага для температуры и давления)"""
+    """Generates lag features: 1 hour ago (4 steps), 24 hours ago (96 steps), and 7 days ago (672 steps for temperature and pressure)."""
     df_feat = df.copy()
     for col in columns:
         if col in df_feat.columns:
@@ -253,29 +253,29 @@ def add_lag_features(df: pd.DataFrame, columns: List[str]) -> pd.DataFrame:
 
 
 def add_atmospheric_dynamics(df: pd.DataFrame) -> pd.DataFrame:
-    """Рассчитывает динамические признаки атмосферы.
-    Вызывать ПОСЛЕ add_pressure_trend и add_lag_features, так как
-    pressure_accel_3h требует pressure_trend_3h, а thermal_stratification
-    требует temperature_lag_672.
+    """Computes atmospheric dynamic features.
+    Call AFTER add_pressure_trend and add_lag_features because
+    pressure_accel_3h requires pressure_trend_3h, and thermal_stratification
+    requires temperature_lag_672.
     """
     df_feat = df.copy()
 
-    # Скалярная скорость ветра и её тренд за 1ч
+    # Scalar wind speed and its 1h trend
     if "wind_u" in df_feat.columns and "wind_v" in df_feat.columns:
         df_feat["wind_speed_scalar"] = np.sqrt(df_feat["wind_u"]**2 + df_feat["wind_v"]**2)
         df_feat["wind_speed_trend_1h"] = df_feat["wind_speed_scalar"].diff(4).fillna(0.0)
 
-    # Тренд давления за 6ч и ускорение изменения давления (2-я производная)
+    # 6h pressure trend and pressure acceleration (second derivative)
     if "pressure" in df_feat.columns:
         df_feat["pressure_trend_6h"] = df_feat["pressure"].diff(24).fillna(0.0)
     if "pressure_trend_3h" in df_feat.columns:
         df_feat["pressure_accel_3h"] = df_feat["pressure_trend_3h"].diff(12).fillna(0.0)
 
-    # Отклонение температуры от нормы 7 дней (тепловая стратификация)
+    # 7-day temperature deviation (thermal stratification)
     if "temperature" in df_feat.columns and "temperature_lag_672" in df_feat.columns:
         df_feat["thermal_stratification"] = df_feat["temperature"] - df_feat["temperature_lag_672"]
 
-    # 24h суточные разности (дифференциал относительно аналогичного времени вчера)
+    # 24h diurnal differences (differential relative to the same time yesterday)
     if "temperature" in df_feat.columns and "temperature_lag_96" in df_feat.columns:
         df_feat["temp_diff_24h"] = (df_feat["temperature"] - df_feat["temperature_lag_96"]).fillna(0.0)
     elif "temp_diff_24h" not in df_feat.columns:
@@ -291,7 +291,7 @@ def add_atmospheric_dynamics(df: pd.DataFrame) -> pd.DataFrame:
     elif "pressure_diff_24h" not in df_feat.columns:
         df_feat["pressure_diff_24h"] = 0.0
 
-    # Невязка реального датчика и синоптического прогноза Open-Meteo
+    # Residual error between sensor reading and Open-Meteo synoptic forecast
     if "temperature" in df_feat.columns and "temperature_2m" in df_feat.columns:
         df_feat["openmeteo_temp_bias"] = (df_feat["temperature"] - df_feat["temperature_2m"]).fillna(0.0)
         df_feat["openmeteo_temp_bias_3h"] = df_feat["openmeteo_temp_bias"].diff(12).fillna(0.0)
@@ -308,9 +308,9 @@ def add_atmospheric_dynamics(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_phase_transition_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Рассчитывает физические признаки фазовых переходов воды.
-    Вызывать ПОСЛЕ add_temperature_derivatives и add_solar_zenith_angle, так как
-    frost_risk требует temp_trend_1h, а evaporation_index — potential_solar_radiation.
+    """Computes thermodynamic phase transition features for water vapor.
+    Call AFTER add_temperature_derivatives and add_solar_zenith_angle because
+    frost_risk requires temp_trend_1h, and evaporation_index requires potential_solar_radiation.
     """
     df_feat = df.copy()
     if "temperature" not in df_feat.columns or "humidity" not in df_feat.columns:
@@ -319,7 +319,7 @@ def add_phase_transition_features(df: pd.DataFrame) -> pd.DataFrame:
     T = df_feat["temperature"]
     RH = df_feat["humidity"].clip(1.0, 100.0)
 
-    # Температура влажного термометра (аппроксимация Stull 2011, погрешность ~0.3°C)
+    # Wet-bulb temperature (Stull 2011 approximation, error ~0.3°C)
     df_feat["wet_bulb_temperature"] = (
         T * np.arctan(0.151977 * (RH + 8.313659)**0.5)
         + np.arctan(T + RH)
@@ -328,14 +328,14 @@ def add_phase_transition_features(df: pd.DataFrame) -> pd.DataFrame:
         - 4.686035
     )
 
-    # Удельная влажность (г/кг) через формулу Магнуса
+    # Specific humidity (g/kg) via Magnus formula
     if "pressure" in df_feat.columns:
         e_s = 6.112 * np.exp(17.67 * T / (T + 243.5))
         e = RH / 100.0 * e_s
         P = df_feat["pressure"].clip(lower=1.0)
         df_feat["specific_humidity"] = (0.622 * e / (P - 0.378 * e)).clip(0.0, 50.0)
 
-    # Риск заморозка: T < 3°C и температура падает
+    # Frost risk: T < 3°C and temperature falling
     if "temp_trend_1h" in df_feat.columns:
         df_feat["frost_risk"] = (
             (T < 3.0).astype(float) * np.maximum(0.0, -df_feat["temp_trend_1h"])
@@ -343,7 +343,7 @@ def add_phase_transition_features(df: pd.DataFrame) -> pd.DataFrame:
     else:
         df_feat["frost_risk"] = (T < 3.0).astype(float)
 
-    # Индекс испарения: солнечная радиация × дефицит насыщения × температура
+    # Evaporation index: solar radiation x saturation deficit x temperature
     if "potential_solar_radiation" in df_feat.columns:
         df_feat["evaporation_index"] = (
             df_feat["potential_solar_radiation"]
@@ -355,14 +355,14 @@ def add_phase_transition_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_station_meta_features(df: pd.DataFrame, station_meta: Dict) -> pd.DataFrame:
-    """Добавляет статические мета-признаки станции и оценку риска холодного озера.
-    Вызывать ПОСЛЕ add_inversion_risk, так как valley_cold_pool_risk использует
-    inversion_risk как динамическую компоненту.
+    """Adds static station metadata features and cold-air pool risk assessment.
+    Call AFTER add_inversion_risk because valley_cold_pool_risk uses
+    inversion_risk as a dynamic component.
     """
     df_feat = df.copy()
     elevation = float(station_meta.get("elevation_m", 0.0))
 
-    # Класс высоты: 0.0=долина, 0.5=склон, 1.0=высокогорье
+    # Elevation class: 0.0=valley, 0.5=slope, 1.0=alpine
     if elevation < 500.0:
         elevation_class = 0.0
     elif elevation < 1500.0:
@@ -371,10 +371,10 @@ def add_station_meta_features(df: pd.DataFrame, station_meta: Dict) -> pd.DataFr
         elevation_class = 1.0
     df_feat["elevation_class"] = np.float32(elevation_class)
 
-    # Риск холодного воздушного озера в долинах:
-    # низкая высота + ночные инверсионные условия
+    # Valley cold air pool risk:
+    # low elevation + nocturnal radiation inversion conditions
     elev_norm = float(np.clip(elevation / 3000.0, 0.0, 1.0))
-    cold_pool_base = 1.0 - elev_norm   # 1.0 = долина, 0.0 = высокогорье
+    cold_pool_base = 1.0 - elev_norm   # 1.0 = valley, 0.0 = alpine
     if "inversion_risk" in df_feat.columns:
         df_feat["valley_cold_pool_risk"] = (cold_pool_base * df_feat["inversion_risk"]).clip(0.0, 1.0)
     else:
@@ -385,18 +385,18 @@ def add_station_meta_features(df: pd.DataFrame, station_meta: Dict) -> pd.DataFr
 
 def add_station_thermal_heating(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Рассчитывает динамический индекс аккумулированного теплового нагрева корпуса станции
-    при прямом попадании солнечных лучей с учетом обдува ветром (Thermal Mass Heating).
+    Computes dynamic accumulated thermal mass heating index of station chassis
+    under direct solar irradiance attenuated by convective wind cooling (Thermal Mass Heating).
     """
     df_feat = df.copy()
     pot_rad = df_feat.get("potential_solar_radiation", pd.Series(0.0, index=df_feat.index)).values
     sky_clear = df_feat.get("sky_clearness", pd.Series(0.5, index=df_feat.index)).values
     wind_spd = df_feat.get("wind_speed_scalar", pd.Series(0.0, index=df_feat.index)).values
 
-    # Прогрев прямым инсоляционным потоком, ослабляемый скоростью ветра
+    # Solar radiation flux heating attenuated by convective wind speed
     heating_rate = (pot_rad ** 1.5) * np.clip(sky_clear, 0.2, 1.2) / (wind_spd + 1.0)
     
-    # Эмпирическое аккумулятивное накапливание тепла корпуса
+    # Empirical accumulation of chassis thermal mass
     thermal_heating = np.zeros(len(df_feat), dtype=np.float32)
     acc = 0.0
     decay = 0.85
@@ -406,7 +406,7 @@ def add_station_thermal_heating(df: pd.DataFrame) -> pd.DataFrame:
 
     df_feat["station_thermal_heating_index"] = thermal_heating.astype(np.float32)
     
-    # Скорость утреннего прогрева за 3 часа (12 шагов)
+    # Morning heating rate over 3 hours (12 steps)
     if "temperature" in df_feat.columns:
         t_series = df_feat["temperature"].astype(float)
         df_feat["temp_velocity_3h"] = (t_series - t_series.shift(12)).fillna(0.0).astype(np.float32)
@@ -417,8 +417,8 @@ def add_station_thermal_heating(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_uv_clearness(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Относительный индекс УФ-прозрачности (uv_clearness).
-    Сравнивает реальный uv с теоретическим пиковым UV при текущем зенитном угле.
+    Relative UV clearness index (uv_clearness).
+    Compares observed UV against theoretical peak clear-sky UV at current Solar Zenith Angle.
     """
     df_feat = df.copy()
     if "uv" in df_feat.columns and "solar_zenith_angle" in df_feat.columns:
@@ -436,8 +436,8 @@ def add_uv_clearness(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_temp_volatility(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Волатильность температуры за 1 час (4 шага по 15 минут).
-    Характеризует микро-турбулентность и шум измерений.
+    Temperature volatility over 1 hour (4 steps of 15 minutes).
+    Characterizes micro-turbulence and sensor boundary fluctuations.
     """
     df_feat = df.copy()
     if "temperature" in df_feat.columns:
@@ -450,9 +450,9 @@ def add_temp_volatility(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_foehn_index(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Индекс фёна / адиабатического нагрева.
-    Вычисляется по сочетанию высокого ветра, резкого роста температуры,
-    низкой относительной влажности и рельефного риска долины/склона.
+    Foehn adiabatic mountain wind index.
+    Computed from the combination of strong winds, rapid temperature surge,
+    low relative humidity, and valley/slope orographic exposure.
     """
     df_feat = df.copy()
     wind = df_feat.get("wind_speed_scalar", pd.Series(0.0, index=df_feat.index)).fillna(0.0)
@@ -467,8 +467,8 @@ def add_foehn_index(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_pseudo_cape(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Псевдо-CAPE (индекс конвективной неустойчивости атмосферы).
-    Оценивается по сочетанию эквипотенциальной температуры (theta_e) и VPD.
+    Pseudo-CAPE (convective available potential energy index).
+    Estimated from the combination of equivalent potential temperature (theta_e) and VPD.
     """
     df_feat = df.copy()
     theta_e = df_feat.get("theta_e", pd.Series(273.15, index=df_feat.index)).fillna(273.15)
@@ -481,8 +481,8 @@ def add_pseudo_cape(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_dew_point_deficit_trend(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Рассчитывает дефицит точки росы (T - Td) и его тренды за 1ч (4 шага) и 3ч (12 шагов).
-    Один из наиболее сильных индикаторов приближения осадков.
+    Computes dew point deficit (T - Td) and its trends over 1h (4 steps) and 3h (12 steps).
+    One of the strongest indicators of imminent precipitation.
     """
     df_feat = df.copy()
     if "temperature" in df_feat.columns and "dew_point" in df_feat.columns:
@@ -495,8 +495,8 @@ def add_dew_point_deficit_trend(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_pressure_drop_rate(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Рассчитывает величину и скорость падения барометрического давления.
-    Падение давления является классическим физическим маркером подхода циклона/фронта осадков.
+    Computes magnitude and rate of barometric pressure drop.
+    Rapid pressure drop is a primary synoptic indicator of approaching cyclone / rain fronts.
     """
     df_feat = df.copy()
     if "pressure" in df_feat.columns:
@@ -509,8 +509,8 @@ def add_pressure_drop_rate(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_rain_decay(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Взвешенная экспоненциально-затухающая сумма осадков (rain_decay_sum).
-    Использует ewm с периодом полураспада 12 часов (48 шагов по 15 минут).
+    Exponentially weighted moving rain decay sum (rain_decay_sum).
+    Uses EWM with a 12-hour half-life (48 steps of 15 minutes).
     """
     df_feat = df.copy()
     if "rain" in df_feat.columns:
@@ -535,17 +535,17 @@ MODEL_SENSOR_COLUMNS = [
     "pressure_trend_3h", "humidity_trend_3h",
     "temp_trend_1h", "temp_trend_3h", "temp_accel_1h", "inversion_risk",
     "solar_zenith_angle", "potential_solar_radiation",
-    # Группа 1: Динамика атмосферы
+    # Group 1: Atmospheric Dynamics
     "wind_speed_scalar", "wind_speed_trend_1h",
     "pressure_trend_6h", "pressure_accel_3h", "thermal_stratification",
-    # Группа 2: Фазовые переходы
+    # Group 2: Phase Transitions
     "wet_bulb_temperature", "specific_humidity", "frost_risk", "evaporation_index",
-    # Группа 3: Мета-признаки станции
+    # Group 3: Station Metadata
     "elevation_class", "valley_cold_pool_risk",
-    # Группа 4: Новый физический комплекс
+    # Group 4: Advanced Physics Suite
     "vpd", "theta_e", "sky_clearness", "pm_moisture_index",
     "steps_since_last_rain", "ext_temp_bias",
-    # Группа 5: Расширенная микроклиматическая физика
+    # Group 5: Extended Microclimate Physics
     "foehn_index", "pseudo_cape_index", "temp_volatility_1h",
     "uv_clearness", "rain_decay_sum",
     "rain_sum_24h", "rain_sum_72h",
@@ -555,11 +555,11 @@ MODEL_SENSOR_COLUMNS = [
     "temp_diff_24h", "humidity_diff_24h", "pressure_diff_24h",
     "openmeteo_temp_bias", "openmeteo_temp_bias_3h", "openmeteo_temp_bias_24h",
 ]
-# rain_binary — 12-й таргет: бинарный классификатор факта дождя (0/1)
-# Не нормализуется, обучается через BCE loss с pos_weight
+# rain_binary - 12th target: binary rain occurrence flag (0/1)
+# Not normalized, optimized via BCE loss with pos_weight
 MODEL_TARGET_COLUMNS = ["uv", "lux", "temperature", "pressure", "humidity",
                         "pm1", "pm2_5", "pm10", "rain", "wind_u", "wind_v", "rain_binary"]
-RAIN_BINARY_IDX = 11  # Индекс rain_binary в MODEL_TARGET_COLUMNS
+RAIN_BINARY_IDX = 11  # Index of rain_binary in MODEL_TARGET_COLUMNS
 MODEL_STATIC_COLUMNS = ["latitude", "longitude", "elevation_m"]
 NORMALIZE_COLUMNS = [
     "uv", "lux", "temperature", "pressure", "humidity",
@@ -568,17 +568,17 @@ NORMALIZE_COLUMNS = [
     "pressure_trend_3h", "humidity_trend_3h",
     "temp_trend_1h", "temp_trend_3h", "temp_accel_1h", "inversion_risk",
     "solar_zenith_angle", "potential_solar_radiation",
-    # Группа 1
+    # Group 1
     "wind_speed_scalar", "wind_speed_trend_1h",
     "pressure_trend_6h", "pressure_accel_3h", "thermal_stratification",
-    # Группа 2
+    # Group 2
     "wet_bulb_temperature", "specific_humidity", "frost_risk", "evaporation_index",
-    # Группа 3
+    # Group 3
     "elevation_class", "valley_cold_pool_risk",
-    # Группа 4: Новый физический комплекс
+    # Group 4: Advanced Physics Suite
     "vpd", "theta_e", "sky_clearness", "pm_moisture_index",
     "steps_since_last_rain", "ext_temp_bias",
-    # Группа 5: Расширенная микроклиматическая физика
+    # Group 5: Extended Microclimate Physics
     "foehn_index", "pseudo_cape_index", "temp_volatility_1h",
     "uv_clearness", "rain_decay_sum",
     "rain_sum_24h", "rain_sum_72h",
@@ -587,7 +587,7 @@ NORMALIZE_COLUMNS = [
     "humidity_lag_4", "humidity_lag_96",
     "temp_diff_24h", "humidity_diff_24h", "pressure_diff_24h",
     "openmeteo_temp_bias", "openmeteo_temp_bias_3h", "openmeteo_temp_bias_24h",
-    # rain_binary НЕ включаем сюда — остаётся строго 0/1
+    # rain_binary is excluded here - remains strictly 0/1
 ]
 EXTERNAL_FORECAST_COLUMNS = [
     "temperature_2m", "relative_humidity_2m", "surface_pressure",
@@ -602,7 +602,7 @@ LOG1P_COLUMNS = [
 
 
 def apply_log1p_transformations(df: pd.DataFrame) -> pd.DataFrame:
-    """Применяет log1p трансформацию (log(1 + x)) для сглаживания тяжелых хвостов распределения осадков и пыли."""
+    """Applies log1p transformation (log(1 + x)) to mitigate heavy-tailed skewness in rain and PM features."""
     df_feat = df.copy()
     for col in LOG1P_COLUMNS:
         if col in df_feat.columns:
@@ -613,7 +613,7 @@ def apply_log1p_transformations(df: pd.DataFrame) -> pd.DataFrame:
 
 def format_multimodel_external_df(df_om: pd.DataFrame, df_ms: pd.DataFrame = None) -> pd.DataFrame:
     """
-    Приводит исходный DataFrame прогнозов Open-Meteo к единому формату из 8 колонок.
+    Formats raw Open-Meteo forecast DataFrame into standardized 8-column schema.
     """
     if df_om.empty:
         return pd.DataFrame(columns=["timestamp"] + EXTERNAL_FORECAST_COLUMNS)
@@ -634,7 +634,7 @@ def format_multimodel_external_df(df_om: pd.DataFrame, df_ms: pd.DataFrame = Non
 
 def load_combined_external_forecast(raw_ext_dir: str, station_id: int, settings: Dict[str, Any] = None) -> pd.DataFrame:
     """
-    Загружает и подготавливает внешний прогноз Open-Meteo для заданной станции.
+    Loads and prepares external Open-Meteo forecast for specified station.
     """
     om_path = os.path.join(raw_ext_dir, f"forecast_{station_id}.csv")
     if os.path.exists(om_path):
@@ -644,13 +644,13 @@ def load_combined_external_forecast(raw_ext_dir: str, station_id: int, settings:
                 df_om["timestamp"] = pd.to_datetime(df_om["timestamp"], format="mixed")
             return format_multimodel_external_df(df_om)
         except Exception as e:
-            print(f"Ошибка загрузки Open-Meteo для станции {station_id}: {e}")
+            print(f"Error loading Open-Meteo for station {station_id}: {e}")
 
     return pd.DataFrame()
 
 
 def prepare_feature_frame(df: pd.DataFrame, station_meta: Dict[str, Any], external_df: pd.DataFrame = None) -> pd.DataFrame:
-    """Подготавливает DataFrame станции для обучения и инференса через единый пайплайн."""
+    """Prepares station DataFrame for training and inference through unified pipeline."""
     if df.empty:
         return df.copy()
 
@@ -664,7 +664,7 @@ def prepare_feature_frame(df: pd.DataFrame, station_meta: Dict[str, Any], extern
     features["rain_binary"] = (pd.to_numeric(features.get("rain", pd.Series([0.0])),
                                errors="coerce").fillna(0.0) > 0.05).astype("float32")
 
-    # Трендовые / производные признаки
+    # Trend / derivative features
     features = add_vapor_pressure_deficit(features)
     features = add_pressure_trend(features)
     features = add_humidity_trend(features)
@@ -683,7 +683,7 @@ def prepare_feature_frame(df: pd.DataFrame, station_meta: Dict[str, Any], extern
     features = add_equivalent_potential_temperature(features)
     features = add_pseudo_cape(features)
 
-    # Дельта датчик — GFS (ошибка глобальной модели прямо сейчас)
+    # Sensor minus NWP delta (current global model bias)
     if external_df is not None and not external_df.empty and "temperature_2m" in external_df.columns:
         try:
             ext_aligned = external_df.set_index("timestamp").resample("15min").ffill().reset_index()
@@ -703,14 +703,14 @@ def prepare_feature_frame(df: pd.DataFrame, station_meta: Dict[str, Any], extern
         features["ext_temp_bias"] = np.float32(0.0)
         features["ext_temp_bias_24h"] = np.float32(0.0)
 
-    # Лаговые признаки — после всех трендовых
+    # Lag features - computed after trends
     features = add_lag_features(features, ["temperature", "humidity", "pressure", "wind_u", "wind_v"])
     features = add_rain_accumulation(features)
     features = add_rain_decay(features)
-    # Динамика атмосферы — после add_lag_features (нужен temperature_lag_672)
+    # Atmospheric dynamics - after add_lag_features (requires temperature_lag_672)
     features = add_atmospheric_dynamics(features)
 
-    # Логарифмирование тяжелохвостых колонок осадков и пыли
+    # Log1p transformation for heavy-tailed precipitation and particulate columns
     features = apply_log1p_transformations(features)
 
     features["latitude"] = float(station_meta.get("latitude", 0.0))
@@ -721,8 +721,8 @@ def prepare_feature_frame(df: pd.DataFrame, station_meta: Dict[str, Any], extern
 
 
 def build_scalers(df: pd.DataFrame, columns: List[str]) -> Dict[str, Dict[str, float]]:
-    """Строит словарь параметров масштабирования для выбранных колонок с ограничением на минимальный std."""
-    # Словарь минимально допустимых стандартных отклонений для предотвращения взрыва нормализованных значений
+    """Builds scaling parameters dictionary with variance floor guardrails."""
+    # Minimum standard deviation dictionary to prevent numerical explosion
     STD_FLOORS = {
         "rain": 0.2,
         "uv": 1.0,
@@ -748,10 +748,10 @@ def build_scalers(df: pd.DataFrame, columns: List[str]) -> Dict[str, Dict[str, f
             mean_val = 0.0
             std_val = 1.0
 
-        # Накладываем ограничение снизу на std_val
-        floor_val = 0.1  # Общий минимальный floor для всех остальных колонок
+        # Apply variance floor to std_val
+        floor_val = 0.1  # General minimum variance floor for all remaining columns
         for key, floor in STD_FLOORS.items():
-            if key in col:  # Позволяет мачить лаги и тренды, например rain_sum_24h, temperature_lag_4
+            if key in col:  # Matches lagged and trend columns, e.g. rain_sum_24h, temperature_lag_4
                 floor_val = floor
                 break
 
@@ -764,7 +764,7 @@ def build_scalers(df: pd.DataFrame, columns: List[str]) -> Dict[str, Dict[str, f
 
 
 def apply_scalers(df: pd.DataFrame, scalers: Dict[str, Dict[str, float]], columns: List[str]) -> pd.DataFrame:
-    """Нормализует выбранные колонки с помощью заданных scaler'ов."""
+    """Normalizes selected columns using precomputed scalers."""
     df_scaled = df.copy()
     for col in columns:
         if col not in df_scaled.columns or col not in scalers:
@@ -779,7 +779,7 @@ def apply_scalers(df: pd.DataFrame, scalers: Dict[str, Dict[str, float]], column
 
 
 def inverse_scalers(df: pd.DataFrame, scalers: Dict[str, Dict[str, float]], columns: List[str]) -> pd.DataFrame:
-    """Возвращает нормализованные колонки к исходному масштабу."""
+    """Inverses normalized columns back to original physical scale."""
     df_restored = df.copy()
     for col in columns:
         if col not in df_restored.columns or col not in scalers:
@@ -794,7 +794,7 @@ def inverse_scalers(df: pd.DataFrame, scalers: Dict[str, Dict[str, float]], colu
 
 
 def convert_qnh_to_qfe(p_qnh: pd.Series | float | np.ndarray, elevation_m: float) -> pd.Series | float | np.ndarray:
-    """Переводит давление на уровне моря QNH (гПа) в станционное давление QFE (гПа) по барометрической формуле."""
+    """Converts sea-level pressure QNH (hPa) to station surface pressure QFE (hPa) via hypsometric formula."""
     if elevation_m is None or elevation_m <= 0:
         return p_qnh
     factor = (1.0 - (0.0065 * float(elevation_m)) / 288.15) ** 5.255
@@ -802,7 +802,7 @@ def convert_qnh_to_qfe(p_qnh: pd.Series | float | np.ndarray, elevation_m: float
 
 
 def normalize_multimodel_external_df(df: pd.DataFrame, scalers: Dict[str, Dict[str, float]] | None, elevation_m: float = None) -> pd.DataFrame:
-    """Нормализует 8 внешних колонок прогноза Open-Meteo с помощью скейлеров станции."""
+    """Normalizes 8 external Open-Meteo forecast columns using station scalers."""
     if df.empty or scalers is None:
         return df.fillna(0.0)
 
@@ -840,7 +840,7 @@ def prepare_model_inputs(
     external_columns: List[str] | None = None,
     normalize_columns: List[str] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, pd.DatetimeIndex]:
-    """Готовит encoder/decoder входы и временную сетку для модели из сырых данных."""
+    """Prepares encoder/decoder inputs and temporal target grid from raw observations."""
     if sensor_columns is None:
         sensor_columns = MODEL_SENSOR_COLUMNS
     if static_columns is None:
@@ -873,7 +873,7 @@ def prepare_model_inputs(
     sensor_frame_norm = apply_scalers(sensor_frame, scalers, normalize_columns)
     enc_sensors = sensor_frame_norm[sensor_columns].values.astype(np.float32)
 
-    # Глобальная нормализация статических признаков
+    # Global normalization of static features
     raw_static = np.array([float(station_meta.get(col, 0.0)) for col in static_columns], dtype=np.float32)
     if static_columns == ["latitude", "longitude", "elevation_m"]:
         norm_static = np.array([
@@ -888,7 +888,7 @@ def prepare_model_inputs(
     encoder_input = np.hstack([enc_sensors, enc_static]).astype(np.float32)
     encoder_input = encoder_input.reshape(1, lookback_steps, encoder_input.shape[1])
 
-    # Нормализация внешних мультимодельных прогнозов
+    # Normalization of external multi-model forecasts
     forecast_aligned_norm = normalize_multimodel_external_df(forecast_aligned, scalers)
 
     for col in external_columns:
@@ -902,7 +902,7 @@ def prepare_model_inputs(
 
 
 def denormalize_predictions(preds: np.ndarray, target_columns: List[str], scalers: Dict[str, Dict[str, float]]) -> np.ndarray:
-    """Преобразует нормализованные предсказания обратно в физический масштаб."""
+    """Denormalizes predictions back to physical units."""
     preds_df = pd.DataFrame(preds, columns=target_columns)
     restored = inverse_scalers(preds_df, {col: scalers[col]
                                for col in target_columns if col in scalers}, target_columns)
@@ -910,11 +910,11 @@ def denormalize_predictions(preds: np.ndarray, target_columns: List[str], scaler
 
 
 # ---------------------------------------------------------------------------
-# Предобработка, регуляризация и очистка аномалий
+# Preprocessing, regularization, and anomaly cleaning
 # ---------------------------------------------------------------------------
 
 def load_raw_station_json(filepath: str) -> pd.DataFrame:
-    """Загружает сырой JSON файл станции и приводит типы."""
+    """Loads raw station JSON file and enforces numeric dtypes."""
     import json
     if not os.path.exists(filepath):
         return pd.DataFrame()
@@ -936,7 +936,7 @@ def load_raw_station_json(filepath: str) -> pd.DataFrame:
 
 
 def regularize_station_timeline(df: pd.DataFrame) -> pd.DataFrame:
-    """Округляет время до 15 минут, переиндексирует на регулярную сетку."""
+    """Rounds timestamps to 15-minute intervals and reindexes onto a regular temporal grid."""
     if df.empty:
         return df
     df_clean = df.copy()
@@ -950,7 +950,7 @@ def regularize_station_timeline(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def fill_gaps_tiered(df: pd.DataFrame, max_interp_gap_steps: int = 12) -> pd.DataFrame:
-    """Многоуровневое заполнение пропусков: линейная интерполяция до 3ч, далее ffill/bfill."""
+    """Tiered gap imputation: linear interpolation up to 3h, followed by forward/backward fill."""
     if df.empty:
         return df
     df_filled = df.copy()
@@ -962,14 +962,14 @@ def fill_gaps_tiered(df: pd.DataFrame, max_interp_gap_steps: int = 12) -> pd.Dat
 
 
 def clean_station_anomalies(df: pd.DataFrame, station_meta: Dict[str, Any] = None) -> pd.DataFrame:
-    """Очистка выбросов по физическим границам и многоуровневое заполнение."""
+    """Physical bounds clipping and tiered gap imputation."""
     if df.empty:
         return df
     df_clean = df.copy()
     numeric_cols = df_clean.select_dtypes(include=[np.number]).columns
     for col in numeric_cols:
         if col in ["temperature", "humidity", "pressure"]:
-            # Фильтрация нефизичных значений
+            # Filter unphysical values
             if col == "humidity":
                 df_clean.loc[(df_clean[col] < 0.0) | (df_clean[col] > 100.0), col] = np.nan
             elif col == "temperature":
@@ -981,7 +981,7 @@ from typing import Any, Dict, List, Optional
 
 
 def get_single_station_id(settings: Dict[str, Any]) -> Optional[int]:
-    """Возвращает ID станции для одностанционного режима, если он включён."""
+    """Returns station ID for single-station mode if enabled."""
     single_station_cfg = settings.get("single_station", {})
     if not isinstance(single_station_cfg, dict):
         return None
@@ -1000,7 +1000,7 @@ def get_single_station_id(settings: Dict[str, Any]) -> Optional[int]:
 
 
 def get_station_id_from_filename(filename: str) -> Optional[int]:
-    """Извлекает ID станции из имени файла вида station_1_features.parquet."""
+    """Extracts integer station ID from filename pattern station_1_features.parquet."""
     try:
         stem = filename.split(".")[0]
         if stem.startswith("station_"):
@@ -1011,14 +1011,14 @@ def get_station_id_from_filename(filename: str) -> Optional[int]:
 
 def select_stratified_stations(stations: List[Dict[str, Any]], n: int) -> List[Dict[str, Any]]:
     """
-    Стратифицированный отбор N станций по поясам высоты.
-    Разбивает все станции на три группы (низины, среднегорье, высокогорье)
-    и равномерно берёт из каждой группы, чтобы покрыть разные климатические зоны.
+    Stratified selection of N stations across elevation tiers.
+    Partitions stations into three tiers (lowland, mid-altitude, alpine)
+    and samples evenly to cover diverse climatic zones.
 
-    Пояса:
-      - низины      : elevation_m < 1000 м
-      - среднегорье : 1000 м ≤ elevation_m < 2000 м
-      - высокогорье : elevation_m ≥ 2000 м
+    Elevation tiers:
+      - lowland     : elevation_m < 1000 m
+      - mid-altitude: 1000 m <= elevation_m < 2000 m
+      - alpine      : elevation_m >= 2000 m
     """
     low = sorted([s for s in stations if float(s.get("elevation_m", 0)) < 1000],
                  key=lambda s: float(s.get("elevation_m", 0)))
@@ -1028,9 +1028,9 @@ def select_stratified_stations(stations: List[Dict[str, Any]], n: int) -> List[D
                   key=lambda s: float(s.get("elevation_m", 0)))
 
     tiers = [low, mid, high]
-    tier_names = ["низины (<1000м)", "среднегорье (1000-2000м)", "высокогорье (≥2000м)"]
+    tier_names = ["lowland (<1000m)", "mid-altitude (1000-2000m)", "alpine (>=2000m)"]
 
-    # Вычисляем квоту на каждый пояс: распределяем N пропорционально размеру
+    # Calculate tier quotas proportional to group sizes
     total = len(stations)
     result = []
     remaining = n
@@ -1039,20 +1039,20 @@ def select_stratified_stations(stations: List[Dict[str, Any]], n: int) -> List[D
         if not tier:
             continue
         if i == len(tiers) - 1:
-            # Последний непустой пояс получает остаток
+            # Allocate remainder to last non-empty tier
             quota = remaining
         else:
             quota = max(1, round(n * len(tier) / total)) if total > 0 else 0
 
         quota = min(quota, len(tier), remaining)
-        # Берём равномерно из пояса (не только первые/последние по высоте)
+        # Sample evenly across elevation tier
         step = max(1, len(tier) // quota) if quota > 0 else 1
         chosen = tier[::step][:quota]
         result.extend(chosen)
         remaining -= len(chosen)
 
-        print(f"  Пояс '{name}': доступно={len(tier)}, выбрано={len(chosen)}: "
-              + ", ".join(f"{s['name']} ({s.get('elevation_m', '?')}м)" for s in chosen))
+        print(f"  Tier '{name}': available={len(tier)}, selected={len(chosen)}: "
+              + ", ".join(f"{s['name']} ({s.get('elevation_m', '?')}m)" for s in chosen))
 
         if remaining <= 0:
             break
@@ -1062,17 +1062,17 @@ def select_stratified_stations(stations: List[Dict[str, Any]], n: int) -> List[D
 
 def filter_station_files_for_run(station_files: List[str], settings: Dict[str, Any]) -> List[str]:
     """
-    Оставляет только файлы нужных станций с учётом активного режима:
-      - single_station.enabled  → одна станция
-      - station_subset.enabled  → N стратифицированных станций
-      - иначе                   → все файлы
+    Filters station feature files according to active mode:
+      - single_station.enabled -> single station
+      - station_subset.enabled -> N stratified stations
+      - otherwise              -> all files
     """
-    # Режим single_station (обратная совместимость)
+    # Single-station mode (backwards compatibility)
     single_station_id = get_single_station_id(settings)
     if single_station_id is not None:
         return [f for f in station_files if get_station_id_from_filename(f) == single_station_id]
 
-    # Режим subset — список нужных ID задаётся снаружи через allowed_ids
+    # Subset mode - target IDs passed externally via allowed_ids
     subset_cfg = settings.get("_subset_ids")
     if subset_cfg is not None:
         allowed = set(subset_cfg)
@@ -1083,12 +1083,12 @@ def filter_station_files_for_run(station_files: List[str], settings: Dict[str, A
 
 def select_stations_for_run(stations: List[Dict[str, Any]], settings: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
-    Фильтрует список станций согласно активному режиму:
-      - single_station.enabled  → одна станция
-      - station_subset.enabled  → N стратифицированных станций
-      - иначе                   → все станции
+    Filters stations list according to active mode:
+      - single_station.enabled -> single station
+      - station_subset.enabled -> N stratified stations
+      - otherwise              -> all stations
     """
-    # Режим single_station (обратная совместимость)
+    # Single-station mode (backwards compatibility)
     single_station_id = get_single_station_id(settings)
     if single_station_id is not None:
         selected = [
@@ -1098,33 +1098,33 @@ def select_stations_for_run(stations: List[Dict[str, Any]], settings: Dict[str, 
         ]
         return selected if selected else list(stations)
 
-    # Режим subset — стратифицированный отбор N станций
+    # Subset mode - stratified selection of N stations
     subset_cfg = settings.get("station_subset", {})
     if isinstance(subset_cfg, dict) and subset_cfg.get("enabled", False):
         mode = subset_cfg.get("mode", "count")
 
         if mode == "ids":
-            # Конкретные ID указаны вручную
+            # Explicit IDs specified manually
             allowed = set(int(i) for i in subset_cfg.get("ids", []))
             selected = [s for s in stations if int(s.get("id", -1)) in allowed]
             return selected if selected else list(stations)
 
         elif mode == "count":
             count = int(subset_cfg.get("count", 15))
-            print(f"\nРежим пилотного обучения: стратифицированный отбор {count} станций из {len(stations)}")
+            print(f"\nPilot training mode: stratified selection of {count} stations from {len(stations)}")
             return select_stratified_stations(stations, count)
 
     return list(stations)
 
 
 def update_station_elevations(stations_path: str = "config/stations.json") -> None:
-    """Запрашивает и обновляет реальные высоты станций над уровнем моря через Open-Meteo Elevation API."""
+    """Queries and updates ground truth station elevations via Open-Meteo Elevation API."""
     import json
 
     import requests
 
     if not os.path.exists(stations_path):
-        print(f"Ошибка: Файл {stations_path} не найден.")
+        print(f"Error: File {stations_path} not found.")
         return
 
     with open(stations_path, "r", encoding="utf-8") as f:
@@ -1132,7 +1132,7 @@ def update_station_elevations(stations_path: str = "config/stations.json") -> No
 
     stations = config.get("stations", [])
     if not stations:
-        print("Список станций пуст.")
+        print("Stations list is empty.")
         return
 
     lats = [str(s["latitude"]) for s in stations]
@@ -1142,30 +1142,30 @@ def update_station_elevations(stations_path: str = "config/stations.json") -> No
     params = {"latitude": ",".join(lats), "longitude": ",".join(lons)}
 
     try:
-        print("Запрос высот над уровнем моря у Open-Meteo...")
+        print("Querying elevations from Open-Meteo...")
         response = requests.get(url, params=params, timeout=15)
         response.raise_for_status()
         elevations = response.json().get("elevation", [])
 
         if len(elevations) != len(stations):
-            print("Ошибка: количество полученных высот не совпадает с количеством станций.")
+            print("Error: returned elevations count does not match station count.")
             return
 
         for station, elevation in zip(stations, elevations):
             station["elevation_m"] = round(elevation, 1)
-            print(f"  {station['name']}: {station['elevation_m']} м")
+            print(f"  {station['name']}: {station['elevation_m']} m")
 
         with open(stations_path, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
 
-        print(f"\nФайл {stations_path} успешно обновлен с высотами станций!")
+        print(f"\nFile {stations_path} successfully updated with station elevations!")
 
     except Exception as e:
-        print(f"Ошибка при получении высот: {e}")
+        print(f"Error fetching elevations: {e}")
 
 
 def clean_processed_directory(processed_dir: str) -> None:
-    """Очищает устаревшие файлы *.parquet и отчёты из data/processed/ перед генерацией новых признаков."""
+    """Cleans stale *.parquet files and reports from data/processed/ before generating new features."""
     if os.path.exists(processed_dir):
         count = 0
         for f in os.listdir(processed_dir):
@@ -1175,14 +1175,14 @@ def clean_processed_directory(processed_dir: str) -> None:
                     count += 1
                 except Exception:
                     pass
-        print(f"🧹 Очищена директория {processed_dir}: удалено {count} устаревших файлов перед новым расчётом.")
+        print(f"Cleaned directory {processed_dir}: removed {count} stale files before new calculation.")
 
 
 if __name__ == "__main__":
-    # Загружаем настройки из центрального конфига
+    # Load settings from central config
     settings_file = os.path.join("config", "settings.json")
     if not os.path.exists(settings_file):
-        print(f"Ошибка: {settings_file} не найден.")
+        print(f"Error: {settings_file} not found.")
         exit(1)
 
     with open(settings_file, "r", encoding="utf-8") as f:
@@ -1192,7 +1192,7 @@ if __name__ == "__main__":
     out_dir = settings["paths"]["processed_dir"]
     stations_config_path = settings["paths"]["stations_config"]
 
-    # Автоматическая зачистка старых файлов перед новым расчетом
+    # Automatic cleanup of stale files before new calculation
     clean_processed_directory(out_dir)
 
     if os.path.exists(stations_config_path):
@@ -1217,7 +1217,7 @@ if __name__ == "__main__":
             if not os.path.exists(raw_file):
                 continue
 
-            print(f"\n--- Запуск конвейера предобработки для: {name} (id={sid}) ---")
+            print(f"\n--- Starting preprocessing pipeline for: {name} (id={sid}) ---")
             try:
                 elevation = float(station_meta["elevation_m"])
 
@@ -1231,14 +1231,14 @@ if __name__ == "__main__":
                 df_raw["timestamp"] = pd.to_datetime(df_raw["timestamp"], format="mixed")
                 df = prepare_feature_frame(df_raw, station_meta)
 
-                # ext_temp_bias требует внешних прогнозов, которых тут нет — ставим 0
+                # ext_temp_bias requires external forecasts, none here -> set to 0
                 if "ext_temp_bias" not in df.columns:
                     df["ext_temp_bias"] = np.float32(0.0)
 
                 parquet_file = os.path.join(out_dir, f"station_{sid}_features.parquet")
                 df.to_parquet(parquet_file, index=False)
-                print(f"  Успешно обработано и сохранено (raw): {parquet_file} ({df.shape[0]} строк)")
+                print(f"  Successfully processed and saved (raw): {parquet_file} ({df.shape[0]} rows)")
 
             except Exception as e:
-                print(f"  Ошибка при обработке метеостанции {name}: {e}")
+                print(f"  Error processing station {name}: {e}")
 

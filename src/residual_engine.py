@@ -1,17 +1,17 @@
 """
 =============================================================================
-МОДУЛЬ: Residual Boosting Engine (residual_engine.py)
+MODULE: Residual Boosting Engine (residual_engine.py)
 -----------------------------------------------------------------------------
-НАЗНАЧЕНИЕ:
-Модуль ансамблирования и машинного обучения для корректировки систематических
-ошибок (Residual Correction) основной нейросети TFT.
+PURPOSE:
+Ensemble and machine learning module for systematic error correction
+(Residual Correction) of the primary TFT neural network.
 
-ОСНОВНЫЕ ФУНКЦИИ И КЛАССЫ:
-1. Класс `ResidualModelBundle`: хранение обученных регрессоров CatBoost для
-   температуры, влажности и давления.
-2. `apply_residual_correction`: коррекция выходов нейросети на основе текущих
-   трендов ошибки и синоптических разностей.
-3. Цикл генерации данных ошибок и обучения модели корректировки остатков.
+KEY FUNCTIONS & CLASSES:
+1. Class `ResidualModelBundle`: storage of trained CatBoost regressors for
+   temperature, humidity, and pressure.
+2. `apply_residual_correction`: corrects neural network outputs based on current
+   error trends and synoptic forecast differentials.
+3. Pipeline for error dataset construction and residual model training.
 =============================================================================
 """
 
@@ -195,7 +195,7 @@ def build_residual_feature_frame(
     sample_stride: int = 1,
     sample_indices: List[int] | None = None,
 ) -> pd.DataFrame:
-    """Строит признаки CatBoost residual-модели для всего горизонта."""
+    """Constructs CatBoost residual features across the entire forecast horizon."""
     sensor_norm = apply_scalers(sensor_df.copy(), station_scalers, NORMALIZE_COLUMNS)
     sensor_norm = sensor_norm.sort_values("timestamp").reset_index(drop=True)
     ext_norm = _prepare_external_frame(forecast_df, future_timestamps, station_scalers)
@@ -252,7 +252,7 @@ def build_residual_feature_frame(
         tft_humidity_trend_step = tft_hum - prev_tft_hum
         tft_pressure_trend_step = tft_press - prev_tft_press
 
-        # Расчет признаков ансамбля моделей ECMWF / GFS
+        # Compute multi-model ensemble features (ECMWF / GFS)
         temp_spread = float(ext_row.get("temp_ensemble_spread", 0.0)) if hasattr(ext_row, "get") and ext_row.get("temp_ensemble_spread") is not None else 0.0
         rolling_mean_bias = float(ext_row.get("rolling_mean_bias_24h", 0.0)) if hasattr(ext_row, "get") and ext_row.get("rolling_mean_bias_24h") is not None else 0.0
         last_3h_slope = float(ext_row.get("last_3h_temp_slope", 0.0)) if hasattr(ext_row, "get") and ext_row.get("last_3h_temp_slope") is not None else 0.0
@@ -340,7 +340,7 @@ def load_residual_models(models_dir: str) -> ResidualModelBundle:
         return ResidualModelBundle(models=models, feature_columns=feature_columns)
 
     for target in RESIDUAL_TARGETS:
-        # 1. Загрузка сегментированных по горизонтам моделей (short=0-6ч, medium=6-24ч, long=24-48ч)
+        # 1. Load horizon-segmented models (short=0-6h, medium=6-24h, long=24-48h)
         for seg in ["short", "medium", "long"]:
             seg_path = os.path.join(models_dir, f"{target}_{seg}.cbm")
             if os.path.exists(seg_path):
@@ -352,7 +352,7 @@ def load_residual_models(models_dir: str) -> ResidualModelBundle:
                 except Exception:
                     pass
 
-        # 2. Фолбэк базовая модель
+        # 2. Fallback base model
         model_path = os.path.join(models_dir, f"{target}.cbm")
         if os.path.exists(model_path):
             try:
@@ -400,7 +400,7 @@ def apply_residual_correction(
     for target in RESIDUAL_TARGETS:
         target_idx = MODEL_TARGET_COLUMNS.index(target)
         
-        # Проверяем наличие сегментированных моделей по горизонтам
+        # Check existence of horizon-segmented models
         has_segmented = (
             f"{target}_short" in residual_bundle.models and
             f"{target}_medium" in residual_bundle.models and
@@ -465,7 +465,7 @@ def apply_residual_correction(
 def residual_models_available(bundle: ResidualModelBundle | None) -> bool:
     return bool(bundle and bundle.models)
 #!/usr/bin/env python3
-"""Обучение CatBoost residual-моделей для temperature, humidity и pressure."""
+"""Train CatBoost residual models for temperature, humidity, and pressure."""
 
 import argparse
 import json
@@ -480,7 +480,7 @@ import torch
 try:
     from catboost import CatBoostRegressor, Pool
 except Exception as exc:  # pragma: no cover - runtime guard
-    raise SystemExit("CatBoost не установлен. Добавьте зависимость из requirements.txt и повторите запуск.") from exc
+    raise SystemExit("CatBoost is not installed. Install requirements and retry.") from exc
 
 from model import ClimateDataset, TFTForecaster
 from data_pipeline import (MODEL_TARGET_COLUMNS, NORMALIZE_COLUMNS, apply_scalers,
@@ -593,7 +593,7 @@ def _load_model(settings: dict, device: torch.device) -> TFTForecaster:
 
 
 def clean_old_residual_models(models_dir: str):
-    """Очищает устаревшие cbm файлы моделей CatBoost перед новым обучением."""
+    """Cleans stale CatBoost *.cbm model files prior to new training."""
     if os.path.exists(models_dir):
         cleaned = 0
         for f in os.listdir(models_dir):
@@ -603,53 +603,53 @@ def clean_old_residual_models(models_dir: str):
                     cleaned += 1
                 except Exception:
                     pass
-        print(f"🧹 Очищено {cleaned} старых файлов моделей CatBoost из {models_dir}")
+        print(f"🧹 Cleaned {cleaned} stale CatBoost model files from {models_dir}")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Обучение CatBoost residual-моделей для TFT-прогноза.")
-    parser.add_argument("--max-windows-per-station", type=int, default=240, help="Ограничить число окон на станцию")
+    parser = argparse.ArgumentParser(description="Training CatBoost residual models for TFT forecasts.")
+    parser.add_argument("--max-windows-per-station", type=int, default=240, help="Limit number of windows per station")
     parser.add_argument("--step-stride", type=int, default=4,
-                        help="Брать каждый N-й шаг горизонта (для короткого горизонта)")
+                        help="Sample every N-th step for near horizon")
     parser.add_argument("--step-stride-long", type=int, default=1,
-                        help="Брать каждый N-й шаг для горизонта > near_horizon_hours")
+                        help="Sample every N-th step for horizon > near_horizon_hours")
     parser.add_argument("--horizon-step-weight", type=float, default=1.5,
-                        help="Вес признаков horizon_step и horizon_step_log при обучении CatBoost (начинать с 1.5)")
+                        help="Weight for horizon_step and horizon_step_log in CatBoost training")
     parser.add_argument("--long-horizon-sample-weight", type=float, default=1.5,
-                        help="Вес объектов с горизонтом > near_horizon_hours")
-    parser.add_argument("--iterations", type=int, default=700, help="Итерации CatBoost")
+                        help="Weight for samples with horizon > near_horizon_hours")
+    parser.add_argument("--iterations", type=int, default=700, help="CatBoost training iterations")
     parser.add_argument("--learning-rate", type=float, default=0.05, help="Learning rate CatBoost")
-    parser.add_argument("--depth", type=int, default=8, help="Глубина деревьев CatBoost")
-    parser.add_argument("--l2-leaf-reg", type=float, default=5.0, help="L2 регуляризация CatBoost")
+    parser.add_argument("--depth", type=int, default=8, help="CatBoost tree depth")
+    parser.add_argument("--l2-leaf-reg", type=float, default=5.0, help="CatBoost L2 leaf regularization")
     parser.add_argument(
         "--uncertainty",
         action="store_true",
-        help="Использовать RMSEWithUncertainty для оценки доверительных интервалов в CatBoost",
+        help="Use RMSEWithUncertainty for confidence intervals in CatBoost",
     )
     parser.add_argument(
         "--cv-mode",
         choices=["rolling", "holdout"],
         default="rolling",
-        help="Режим валидации residual-моделей",
+        help="Validation mode for residual models",
     )
-    parser.add_argument("--cv-folds", type=int, default=5, help="Количество rolling-folds")
+    parser.add_argument("--cv-folds", type=int, default=5, help="Number of rolling folds")
     parser.add_argument(
         "--cv-min-train-ratio",
         type=float,
         default=0.5,
-        help="Минимальная доля train в первом rolling fold",
+        help="Minimum train fraction in first rolling fold",
     )
     parser.add_argument(
         "--cv-gap-steps",
         type=int,
         default=4,
-        help="Gap между train и valid в residual-строках (по умолчанию 4 ~ 1 час при шаге 15 мин)",
+        help="Gap between train and valid splits in residual rows (default: 4 ~ 1h)",
     )
     parser.add_argument(
         "--cv-val-size",
         type=int,
         default=None,
-        help="Размер validation-блока на fold в residual-строках (если не задан, считается автоматически)",
+        help="Validation block size per fold in residual rows (auto-computed if None)",
     )
     args = parser.parse_args()
 
@@ -688,7 +688,7 @@ def main() -> None:
     feature_rows: list[dict] = []
     residual_targets: dict[str, list[float]] = {target: [] for target in RESIDUAL_TARGETS}
 
-    print("--- Сбор residual-выборки ---")
+    print("--- Ingesting Residual Dataset ---")
     for file_name in station_files:
         sid = int(file_name.split("_")[1])
         station_meta = next((station for station in stations if station["id"] == sid), None)
@@ -763,7 +763,7 @@ def main() -> None:
                     residual_targets[target].append(
                         float(targets_norm[step_idx, target_idx] - preds_norm[step_idx, target_idx]))
 
-        print(f"  station_{sid}: {len(selected_positions)} окон, строк всего: {len(feature_rows)}")
+        print(f"  station_{sid}: {len(selected_positions)} windows, total rows: {len(feature_rows)}")
 
     if not feature_rows:
         raise SystemExit("Residual training data is empty.")
@@ -793,7 +793,7 @@ def main() -> None:
         "cv_val_size": args.cv_val_size,
     }
 
-    print(f"--- Обучение CatBoost residual models (loss: {loss_func}) ---")
+    print(f"--- Training CatBoost residual models (loss: {loss_func}) ---")
     cat_features = ["station_id"]
     cv_metrics = {}
     feature_importance_report: dict[str, dict[str, float]] = {}
@@ -803,7 +803,7 @@ def main() -> None:
     step_indices_arr = feature_df_model["horizon_step"].to_numpy()
     sample_weights = np.where(step_indices_arr >= near_horizon_steps, args.long_horizon_sample_weight, 1.0)
 
-    # Усиливаем вес экстремальных сценариев (инверсии, фён, высокая конвективная неустойчивость)
+    # Enhance weight for extreme events (inversions, foehn, convective instability)
     if "inversion_risk" in feature_df_model.columns:
         inv_mask = feature_df_model["inversion_risk"].to_numpy() > 0.7
         sample_weights = sample_weights + np.where(inv_mask, 1.5, 0.0)
@@ -821,13 +821,13 @@ def main() -> None:
     for target in RESIDUAL_TARGETS:
         y = np.asarray(residual_targets[target], dtype=np.float32)
         
-        # Асимметричное усиление веса недопрогноза дневного пика температуры (Asymmetric Peak Weighting)
+        # Asymmetric peak weighting for daytime temperature under-forecasts
         target_sample_weights = sample_weights.copy()
         if target == "temperature":
             hour_arr = feature_df_model["forecast_hour"].to_numpy() if "forecast_hour" in feature_df_model.columns else np.zeros(len(y))
-            # 1. Дневной пик (11:00-16:00): штраф за недопрогноз дневного максимума
+            # 1. Daytime peak (11:00-16:00): penalty for under-predicting daytime high
             peak_mask = (hour_arr >= 11) & (hour_arr <= 16) & (y > 0.1)
-            # 2. Ночная коррекция (02:00-06:00): штраф за переохлаждение (недопрогноз ночной температуры)
+            # 2. Nocturnal correction (02:00-06:00): penalty for excessive cooling
             night_mask = (hour_arr >= 2) & (hour_arr <= 6) & (y > 0.1)
             target_sample_weights += np.where(peak_mask, 1.5, 0.0) + np.where(night_mask, 1.5, 0.0)
 
@@ -840,7 +840,7 @@ def main() -> None:
                 val_size=args.cv_val_size,
             )
             if not folds:
-                raise SystemExit("Не удалось построить rolling folds. Увеличьте выборку или уменьшите cv-folds.")
+                raise SystemExit("Could not construct rolling folds. Increase dataset size or reduce cv-folds.")
 
             oof_pred = np.full(shape=len(y), fill_value=np.nan, dtype=np.float32)
             oof_fold_id = np.full(shape=len(y), fill_value=-1, dtype=np.int32)
@@ -961,7 +961,7 @@ def main() -> None:
                 f"MAE={cv_metrics[target]['mae']:.4f}"
             )
 
-        # Прод-модель обучаем на всем датасете residual-признаков
+        # Train production model on entire residual feature dataset
         full_pool = Pool(feature_df_model[RESIDUAL_FEATURE_COLUMNS], y,
                          cat_features=cat_features, weight=target_sample_weights)
         model_cb = CatBoostRegressor(
@@ -980,7 +980,7 @@ def main() -> None:
         model_cb.save_model(model_path)
         print(f"  saved {target} -> {model_path}")
 
-        # Обучаем 3 сегментированные по горизонтам модели (short=0-6ч, medium=6-24ч, long=24-48ч)
+        # Train 3 horizon-segmented models (short=0-6h, medium=6-24h, long=24-48h)
         segments = {
             "short": feature_df_model["forecast_step_idx"] < 24,
             "medium": (feature_df_model["forecast_step_idx"] >= 24) & (feature_df_model["forecast_step_idx"] < 96),
@@ -1009,7 +1009,7 @@ def main() -> None:
                 model_seg.save_model(seg_path)
                 print(f"  saved segmented model {target} ({seg_name}) -> {seg_path}")
 
-        # Расчет Feature Importance
+        # Compute Feature Importance
         imp_values = model_cb.get_feature_importance(full_pool)
         imp_sorted = sorted(
             zip(RESIDUAL_FEATURE_COLUMNS, [float(v) for v in imp_values]),

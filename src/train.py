@@ -1,14 +1,14 @@
 """
 =============================================================================
-МОДУЛЬ: TFT Model Training Pipeline (train.py)
+MODULE: TFT Model Training Pipeline (train.py)
 -----------------------------------------------------------------------------
-НАЗНАЧЕНИЕ:
-Основной скрипт обучения и валидации нейронной сети Temporal Fusion Transformer (TFT).
+PURPOSE:
+Main training and validation pipeline for Temporal Fusion Transformer (TFT).
 
-ОСНОВНЫЕ ФУНКЦИИ:
-1. Загрузка обработанных датасетов станций и сборка глобальных ConcatDataset.
-2. Цикл обучения (Training Loop) с оптимизатором AdamW и взвешиванием градиентов.
-3. Валидация модели и сохранение лучшего чекпоинта весов `models/tft_model.pth`.
+KEY FUNCTIONS:
+1. Ingest processed station datasets into global ConcatDataset.
+2. Training loop with AdamW optimizer and multi-task loss weighting.
+3. Validation and best checkpoint persistence (`models/tft_model.pth`).
 =============================================================================
 """
 
@@ -46,14 +46,14 @@ def evaluate(
     rain_binary_index: int = 11,
 ) -> tuple[float, dict]:
     """
-    Вычисляет лосс и метеорологические метрики на валидационной выборке:
-    Precision, Recall, F1, CSI (для прогноза дождя).
+    Computes loss and meteorological evaluation metrics on validation split:
+    Precision, Recall, F1, CSI (for rain classification).
     """
     model.eval()
     total_loss = 0.0
     num_batches = 0
 
-    # Метрики бинарного прогноза дождя
+    # Binary rain prediction metrics
     tp = fp = fn = tn = 0
 
     with torch.no_grad():
@@ -84,7 +84,7 @@ def evaluate(
             total_loss += loss.item()
             num_batches += 1
 
-            # Считаем Precision / Recall / F1 / CSI по порогу 50%
+            # Compute Precision / Recall / F1 / CSI at 50% probability threshold
             rain_pred_bin = (torch.sigmoid(preds[..., rain_binary_index]) >= 0.5).float()
 
             rain_true = torch.nan_to_num(targets[..., rain_binary_index], nan=0.0)
@@ -104,29 +104,29 @@ def evaluate(
 
 
 def main():
-    # Загружаем настройки из центрального конфига
+    # Load settings from central configuration
     settings_file = resolve_path("config", "settings.json")
     if not os.path.exists(settings_file):
-        print(f"Ошибка: {settings_file} не найден.")
+        print(f"Error: {settings_file} not found.")
         exit(1)
 
     settings = load_settings(settings_file)
 
-    # CLI аргументы
-    parser = argparse.ArgumentParser(description="Обучение TFT модели погоды.")
-    parser.add_argument("--epochs", type=int, default=settings["training"]["epochs"], help="Количество эпох")
-    parser.add_argument("--lr", type=float, default=settings["training"]["lr"], help="Скорость обучения")
-    parser.add_argument("--batch_size", type=int, default=settings["training"]["batch_size"], help="Размер батча")
+    # CLI arguments
+    parser = argparse.ArgumentParser(description="Training pipeline for TFT weather model.")
+    parser.add_argument("--epochs", type=int, default=settings["training"]["epochs"], help="Number of training epochs")
+    parser.add_argument("--lr", type=float, default=settings["training"]["lr"], help="Learning rate")
+    parser.add_argument("--batch_size", type=int, default=settings["training"]["batch_size"], help="Batch size")
     parser.add_argument("--patience", type=int,
-                        default=settings["training"]["patience"], help="Терпение ранней остановки")
-    parser.add_argument("--all-stations", action="store_true", help="Обучать на всех станциях")
-    parser.add_argument("--station-id", type=int, default=None, help="ИД одной станции для обучения")
+                        default=settings["training"]["patience"], help="Early stopping patience")
+    parser.add_argument("--all-stations", action="store_true", help="Train on all stations")
+    parser.add_argument("--station-id", type=int, default=None, help="Single station ID for training")
     parser.add_argument("--num-stations", type=int, default=None,
-                        help="Пилотный режим: стратифицированно выбрать N станций из разных поясов высоты")
+                        help="Pilot mode: stratified selection of N stations across elevation tiers")
     parser.add_argument("--fast", action="store_true",
-                        help="CPU-быстрый режим: hidden_size=64, num_heads=2 — для быстрой проверки архитектуры")
+                        help="Fast CPU mode: hidden_size=64, num_heads=2 for rapid testing")
     parser.add_argument("--max-windows", type=int, default=None,
-                        help="Ограничить число обучающих окон (для пилотных запусков)")
+                        help="Limit number of training windows (for pilot runs)")
     args = parser.parse_args()
 
     if args.all_stations:
@@ -140,9 +140,9 @@ def main():
         settings["station_subset"] = {"enabled": True, "mode": "count", "count": args.num_stations}
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Используемое устройство: {device}")
+    print(f"Compute device: {device}")
 
-    # Пути из конфига
+    # Paths from configuration
     processed_dir = resolve_path(settings["paths"]["processed_dir"])
     raw_ext_dir = resolve_path(settings["paths"]["external_dir"])
     models_dir = resolve_path(settings["paths"]["models_dir"])
@@ -155,9 +155,9 @@ def main():
     val_datasets = []
     test_datasets = []
 
-    # Сканируем Parquet файлы
+    # Scan Parquet files
     if not os.path.exists(processed_dir):
-        print(f"Ошибка: Директория {processed_dir} не найдена.")
+        print(f"Error: Directory {processed_dir} not found.")
         return
 
     station_files = [f for f in os.listdir(processed_dir) if f.startswith(
@@ -165,7 +165,7 @@ def main():
     station_files = filter_station_files_for_run(station_files, settings)
 
     if not station_files:
-        print("Обработанные файлы станций не найдены.")
+        print("Processed station files not found.")
         return
 
     with open(stations_config, "r", encoding="utf-8") as f:
@@ -173,15 +173,15 @@ def main():
 
     stations = select_stations_for_run(stations, settings)
 
-    # Синхронизируем список ID выбранных станций для фильтрации файлов
+    # Synchronize selected station IDs for file filtering
     settings["_subset_ids"] = [int(s["id"]) for s in stations]
     station_files = filter_station_files_for_run(station_files, settings)
 
-    print(f"Найдено станций для обучения: {len(station_files)}")
+    print(f"Found stations for training: {len(station_files)}")
 
     min_required_steps = settings["model"]["lookback_steps"] + settings["model"]["horizon_steps"]
 
-    # Словарь, куда запишем рассчитанные скейлеры (среднее/отклонение)
+    # Scalers dictionary (mean / std)
     scalers_dict = {}
 
     for sf in station_files:
@@ -191,7 +191,7 @@ def main():
         df_forecast = load_combined_external_forecast(raw_ext_dir, sid, settings)
 
         if df_forecast.empty:
-            print(f"  Внимание: Внешний прогноз для станции {sid} не найден (или отключен), пропускаем.")
+            print(f"  Warning: External forecast for station {sid} not found (or disabled), skipping.")
             continue
 
         df_features["timestamp"] = pd.to_datetime(df_features["timestamp"], format="mixed")
@@ -202,7 +202,7 @@ def main():
         if not station_meta:
             continue
 
-        # Добавляем статические координаты
+        # Add static coordinates
         df_features["latitude"] = float(station_meta["latitude"])
         df_features["longitude"] = float(station_meta["longitude"])
         df_features["elevation_m"] = float(station_meta["elevation_m"])
@@ -211,17 +211,17 @@ def main():
         max_ts = df_features["timestamp"].max()
         days_span = (max_ts - min_ts).days
 
-        # Умное разделение на выборки: проверяем, охватывают ли данные нужный исторический диапазон
-        # Дополнительно требуем не менее 180 дней истории до 01.07.2025 для календарного сплита
+        # Split datasets verifying historical time coverage
+        # Require at least 180 days history prior to 2025-07-01 for calendar split
         train_days = (pd.to_datetime("2025-07-01") - df_features["timestamp"].min()).days
         has_required_range = (train_days >= 180) and \
                              (df_features["timestamp"].max() > pd.to_datetime("2026-01-01"))
 
-        # Purging buffer (288 шагов = 3 суток = 96 lookback + 192 horizon) для исключения утечек данных
+        # Purging buffer (288 steps = 3 days = 96 lookback + 192 horizon) to prevent data leakage
         purge_steps = 288
         if not has_required_range:
-            # Делим по индексам с зазором зачистки (Purged Split)
-            print(f"  Станция {sid}: [Режим Теста / Purged Split 70/15/15] Зазор зачистки: {purge_steps} шагов.")
+            # Index-based Purged Split with buffer
+            print(f"  Station {sid}: [Test Mode / Purged Split 70/15/15] Purge gap: {purge_steps} steps.")
             n = len(df_features)
             idx_train_end = int(n * 0.7)
             idx_val_end = int(n * 0.85)
@@ -229,20 +229,20 @@ def main():
             df_val = df_features.iloc[min(n, idx_train_end + purge_steps):idx_val_end].copy()
             df_test = df_features.iloc[min(n, idx_val_end + purge_steps):].copy()
         else:
-            # Рабочий режим с зазором в 3 суток между датами (Purged Date Split)
-            print(f"  Станция {sid}: [Рабочий режим / Purged Split] Буфер зачистки: 3 суток между выборками.")
+            # Operational mode with 3-day buffer between dates (Purged Date Split)
+            print(f"  Station {sid}: [Operational Mode / Purged Split] Purge buffer: 3 days between splits.")
             df_train = df_features[df_features["timestamp"] < "2025-07-01"].copy()
             df_val = df_features[(df_features["timestamp"] >= "2025-07-04") &
                                  (df_features["timestamp"] < "2026-01-01")].copy()
             df_test = df_features[df_features["timestamp"] >= "2026-01-04"].copy()
 
-        # 2. РАССЧИТЫВАЕМ параметры масштабирования СТРОГО НА df_train
+        # 2. Compute scaling parameters strictly on df_train
         cols_to_normalize = NORMALIZE_COLUMNS
 
         station_key = f"station_{sid}"
         station_scalers = build_scalers(df_train, cols_to_normalize)
 
-        # Дополнительно считаем scaler'ы для внешних прогнозов
+        # Compute scalers for external NWP forecasts
         ext_df_15m = df_forecast.sort_values("timestamp").set_index("timestamp").resample("15min").ffill().reset_index()
         ext_cols_for_scaling = [c for c in ["wind_speed_10m", "cloud_cover", "om_wind_speed_10m", "ms_wind_speed_10m", "om_cloud_cover", "ms_cloud_cover"] if c in ext_df_15m.columns]
         if ext_cols_for_scaling:
@@ -266,7 +266,7 @@ def main():
 
         scalers_dict[station_key] = station_scalers
 
-        # Создаем датасеты
+        # Create datasets
         if len(df_train) >= min_required_steps:
             train_datasets.append(ClimateDataset(df_train, df_forecast, scalers=station_scalers))
         if len(df_val) >= min_required_steps:
@@ -275,22 +275,22 @@ def main():
             test_datasets.append(ClimateDataset(df_test, df_forecast, scalers=station_scalers))
 
     if not train_datasets or not val_datasets:
-        print(f"Критическая ошибка: недостаточно данных. Требуется не менее {min_required_steps} строк.")
+        print(f"Critical error: insufficient data records. Requires at least {min_required_steps} rows.")
         return
 
-    # Сохраняем скейлеры в config/scalers.json
+    # Save scalers in config/scalers.json
     with open(scalers_file, "w", encoding="utf-8") as f:
         json.dump(scalers_dict, f, indent=2)
-    print(f"\nПараметры нормализации (обучающие) успешно сохранены в: {scalers_file}")
+    print(f"\nNormalization parameters (training) successfully saved to: {scalers_file}")
 
-    # Объединяем
+    # Concatenate datasets
     train_dataset = ConcatDataset(train_datasets)
     val_dataset = ConcatDataset(val_datasets)
 
-    print(f"Общий объем окон для обучения: {len(train_dataset)}")
-    print(f"Общий объем окон для валидации: {len(val_dataset)}")
+    print(f"Total training windows: {len(train_dataset)}")
+    print(f"Total validation windows: {len(val_dataset)}")
 
-    # Ограничиваем датасет если указан --max-windows
+    # Limit dataset if --max-windows is specified
     if args.max_windows is not None:
         import random
 
@@ -299,23 +299,23 @@ def main():
         val_indices = random.sample(range(len(val_dataset)),   min(args.max_windows // 4, len(val_dataset)))
         train_dataset = Subset(train_dataset, train_indices)
         val_dataset = Subset(val_dataset,   val_indices)
-        print(f"[Ограничение] Обучение: {len(train_dataset)} окон | Валидация: {len(val_dataset)} окон")
+        print(f"[Limit] Train: {len(train_dataset)} windows | Val: {len(val_dataset)} windows")
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
                               drop_last=True,  pin_memory=False, num_workers=0)
     val_loader = DataLoader(val_dataset,   batch_size=args.batch_size, shuffle=False,
                             drop_last=False, pin_memory=False, num_workers=0)
 
-    # Инициализация TFT модели (параметры берем из блока "tft" в settings.json)
+    # Initialize TFT model from "tft" block in settings.json
     tft_cfg = settings.get("tft", {})
 
-    # --fast: уменьшенная архитектура для быстрой проверки на CPU
+    # --fast: reduced architecture for rapid CPU verification
     if args.fast:
         hidden_size = 64
         num_heads = 2
         num_lstm_layers = 1
         dropout = tft_cfg.get("dropout", 0.1)
-        print("[FAST режим] hidden_size=64, num_heads=2, num_lstm_layers=1")
+        print("[FAST Mode] hidden_size=64, num_heads=2, num_lstm_layers=1")
     else:
         hidden_size = tft_cfg.get("hidden_size", 128)
         num_heads = tft_cfg.get("num_heads", 4)
@@ -330,12 +330,12 @@ def main():
         dropout=dropout,
     ).to(device)
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"TFTForecaster инициализирован. Параметров: {total_params:,}")
+    print(f"TFTForecaster initialized. Trainable parameters: {total_params:,}")
     sys.stdout.flush()
 
-    # AdamW с раздельными группами параметров:
-    # - Группа 1: веса Linear/Attention (weight_decay=1e-2)
-    # - Группа 2: Bias + LayerNorm (weight_decay=0.0 — стандарт для Трансформеров)
+    # AdamW with parameter group separation:
+    # - Group 1: Linear/Attention weights (weight_decay=1e-2)
+    # - Group 2: Bias + LayerNorm (weight_decay=0.0 - Transformer standard)
     decay_params = [
         p for name, p in model.named_parameters()
         if p.requires_grad and p.ndim >= 2
@@ -350,14 +350,14 @@ def main():
         {"params": no_decay_params, "weight_decay": 0.0},
     ], lr=args.lr)
 
-    # Инициализация обучаемого Softmax-нормированного лосса
+    # Initialize learnable Softmax-normalized loss
     min_task_floors = torch.tensor([0.02] * 12, dtype=torch.float32)
     uncertainty_loss_fn = HomoscedasticUncertaintyLoss(num_tasks=12, min_task_weights=min_task_floors).to(device)
 
-    # Добавляем параметры uncertainty_loss_fn в оптимизатор ДО создания планировщика
+    # Add uncertainty_loss_fn parameters to optimizer BEFORE creating scheduler
     optimizer.add_param_group({"params": uncertainty_loss_fn.parameters(), "weight_decay": 0.0, "lr": args.lr * 0.5})
 
-    # Warmup (5 эпох: LR 1e-6 → lr) + CosineAnnealing (оставшиеся эпохи)
+    # Warmup (5 epochs: LR 1e-6 -> lr) + CosineAnnealing (remaining epochs)
     warmup_epochs = min(5, max(1, args.epochs // 6))
     warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
         optimizer, start_factor=1e-3, end_factor=1.0, total_iters=warmup_epochs
@@ -382,7 +382,7 @@ def main():
     rain_event_weight = float(training_cfg.get("rain_event_weight", 2.0))
     rain_binary_index = MODEL_TARGET_COLUMNS.index("rain_binary")
 
-    # Базовый pos_weight для балансировки классов осадков (n_dry / n_rain)
+    # Base pos_weight for rain class balancing (n_dry / n_rain)
     pos_weight = 8.0
     print(f"\nBCE pos_weight (n_dry/n_rain): {pos_weight:.2f}")
 
@@ -391,9 +391,9 @@ def main():
     model_save_path = os.path.join(models_dir, settings["paths"].get("model_filename", "tft_model.pth"))
 
     total_batches = len(train_loader)
-    LOG_EVERY = max(10, total_batches // 20)   # ~5% прогресса
-    print(f"\n--- Запуск цикла обучения (Homoscedastic Uncertainty Weighting) ---")
-    print(f"    Батчей в эпохе: {total_batches} | Лог каждые {LOG_EVERY} батчей")
+    LOG_EVERY = max(10, total_batches // 20)   # ~5% progress
+    print(f"\n--- Starting Training Loop (Homoscedastic Uncertainty Weighting) ---")
+    print(f"    Batches per epoch: {total_batches} | Logging every {LOG_EVERY} batches")
     sys.stdout.flush()
 
     for epoch in range(args.epochs):
@@ -405,7 +405,7 @@ def main():
         batch_start = time.time()
 
         print(f"\n{'='*70}")
-        print(f"ЭПОХА {epoch+1}/{args.epochs}")
+        print(f"EPOCH {epoch+1}/{args.epochs}")
         print(f"{'='*70}")
         sys.stdout.flush()
 
@@ -415,7 +415,7 @@ def main():
             optimizer.zero_grad()
             preds = model(enc_x, dec_x)
 
-            # Вычисляем individual losses для каждого из 12 таргетов
+            # Compute individual losses for each of the 12 targets
             task_losses = []
             for t_idx in range(12):
                 if t_idx == rain_binary_index:
@@ -426,7 +426,7 @@ def main():
                         pos_weight=pos_weight
                     )
                 else:
-                    # 0.5-квантильный (медианный) Pinball/Asymmetric Huber loss для строгой минимизации MAE
+                    # 0.5-quantile (median) Pinball/Asymmetric Huber loss for strict MAE minimization
                     t_loss = masked_asymmetric_huber_loss(
                         preds[..., t_idx:t_idx+1],
                         targets[..., t_idx:t_idx+1],
@@ -448,7 +448,7 @@ def main():
             epoch_loss += loss.item()
             batch_count += 1
 
-            # Частый лог: каждые LOG_EVERY батчей и в самом конце
+            # Periodic logging: every LOG_EVERY batches and epoch end
             if batch_idx % LOG_EVERY == 0 or batch_idx == total_batches:
                 elapsed = time.time() - epoch_start
                 sec_per_batch = elapsed / batch_count
@@ -457,21 +457,21 @@ def main():
                 pct = 100.0 * batch_idx / total_batches
                 running_avg = epoch_loss / batch_count
 
-                # Простой ASCII прогресс-бар (40 символов)
+                # ASCII progress bar (40 chars)
                 filled = int(40 * batch_idx / total_batches)
                 bar = '█' * filled + '░' * (40 - filled)
 
                 print(
                     f"  [{bar}] {pct:5.1f}% "
-                    f"батч {batch_idx:04d}/{total_batches:04d} "
+                    f"batch {batch_idx:04d}/{total_batches:04d} "
                     f"| loss: {loss.item():.4f} "
                     f"| avg: {running_avg:.4f} "
-                    f"| {sec_per_batch:.2f}с/батч "
-                    f"| ETA: {int(eta_sec//60)}м{int(eta_sec % 60):02d}с"
+                    f"| {sec_per_batch:.2f}s/batch "
+                    f"| ETA: {int(eta_sec//60)}m{int(eta_sec % 60):02d}s"
                 )
                 sys.stdout.flush()
 
-        # Оценка на валидации
+        # Validation evaluation
         val_loss, val_metrics = evaluate(
             model, val_loader, device,
             uncertainty_loss_fn=uncertainty_loss_fn,
@@ -481,16 +481,16 @@ def main():
             rain_binary_index=rain_binary_index,
         )
 
-        # Обновление LR по результатам валидации
-        scheduler.step()  # SequentialLR (Warmup → CosineAnnealing) — без аргументов
+        # Update learning rate from validation results
+        scheduler.step()  # SequentialLR (Warmup -> CosineAnnealing)
         current_lr = optimizer.param_groups[0]["lr"]
         avg_train_loss = epoch_loss / batch_count if batch_count > 0 else 0.0
         epoch_time = time.time() - epoch_start
 
-        print(f"Эпоха {epoch+1:02d}/{args.epochs:02d} | "
+        print(f"Epoch {epoch+1:02d}/{args.epochs:02d} | "
               f"Train Loss: {avg_train_loss:.6f} | Val Loss: {val_loss:.6f} | "
-              f"LR: {current_lr:.2e} | Время: {epoch_time:.1f}с | Patience: {patience_counter}/{args.patience}")
-        print(f"  Дождь (Val) | Precision: {val_metrics['precision']:.3f} | "
+              f"LR: {current_lr:.2e} | Time: {epoch_time:.1f}s | Patience: {patience_counter}/{args.patience}")
+        print(f"  Rain (Val) | Precision: {val_metrics['precision']:.3f} | "
               f"Recall: {val_metrics['recall']:.3f} | F1: {val_metrics['f1']:.3f} | "
               f"CSI: {val_metrics['csi']:.3f} | TP={val_metrics['tp']} FP={val_metrics['fp']} FN={val_metrics['fn']}")
 
@@ -498,23 +498,23 @@ def main():
             improvement = (best_val_loss - val_loss) if best_val_loss != float("inf") else 0.0
             best_val_loss = val_loss
             torch.save(model.state_dict(), model_save_path)
-            print(f"  ✓ Сохранена лучшая модель с Val Loss: {best_val_loss:.6f} (улучшение: {improvement:.6f})")
+            print(f"  ✓ Saved best model checkpoint with Val Loss: {best_val_loss:.6f} (improvement: {improvement:.6f})")
             patience_counter = 0
-            # Попробуем уведомить локальный API, чтобы он подгрузил новые веса автоматически
+            # Notify local API to reload model weights
             try:
                 api_url = settings.get("api_url", "http://127.0.0.1:8000")
                 resp = requests.post(f"{api_url}/reload_model", timeout=5)
-                print(f"  → Уведомление API о перезагрузке модели: {resp.status_code}")
+                print(f"  → API model reload notification: {resp.status_code}")
             except Exception as e:
-                print(f"  → Не удалось оповестить API о перезагрузке модели: {e}")
+                print(f"  → Could not notify API about reload: {e}")
         else:
             patience_counter += 1
-            print(f"  Val Loss не улучшился. Лучший результат остаётся: {best_val_loss:.6f}")
+            print(f"  Val Loss did not improve. Best remains: {best_val_loss:.6f}")
             if patience_counter >= args.patience:
-                print(f"Ранняя остановка сработала на эпохе {epoch+1}. Обучение завершено.")
+                print(f"Early stopping triggered at epoch {epoch+1}. Training finished.")
                 break
 
-    print(f"\nОбучение закончено. Веса модели сохранены в: {model_save_path}")
+    print(f"\nTraining complete. Model weights saved to: {model_save_path}")
 
 
 if __name__ == "__main__":

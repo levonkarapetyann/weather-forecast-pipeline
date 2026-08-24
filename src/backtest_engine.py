@@ -2,17 +2,17 @@ import warnings
 warnings.filterwarnings('ignore')
 """
 =============================================================================
-МОДУЛЬ: Core Backtesting & Metric Calculation Engine (backtest_engine.py)
+MODULE: Core Backtesting & Metric Calculation Engine (backtest_engine.py)
 -----------------------------------------------------------------------------
-НАЗНАЧЕНИЕ:
-Выделенный модуль проведения скользящих слепых бэктестов прогнозирования
-и расчета метрик абсолютной ошибки (MAE), RMSE и Bias по горизонтам времени.
+PURPOSE:
+Dedicated engine for rolling blind backtesting
+and metric evaluation (MAE, RMSE, Bias) across forecast horizons.
 
-ОСНОВНЫЕ ФУНКЦИИ:
-1. `run_station_backtest`: генерация траекторий «слепого» прогноза за прошлые
-   N дней (1, 7, 30, 60) и сопоставление с показаниями физических датчиков.
-2. `calculate_metrics_by_horizons`: расчет величины ошибки на сколько ошибается
-   модель в среднем (1ч, 6ч, 12ч, 18ч, 24ч, 36ч, 48ч).
+KEY FUNCTIONS:
+1. `run_station_backtest`: generates blind forecast trajectories over historical
+   N days (1, 7, 30, 60) and benchmarks against ground truth sensor observations.
+2. `calculate_metrics_by_horizons`: error metric evaluation across forecast horizons
+   (1h, 6h, 12h, 18h, 24h, 36h, 48h).
 =============================================================================
 """
 
@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-# Резолвинг импортов
+# Import resolution
 SRC_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SRC_DIR)
 if SRC_DIR not in sys.path:
@@ -47,7 +47,7 @@ from residual_engine import ResidualModelBundle, apply_residual_correction, load
 
 
 class KalmanStateObserver:
-    """Фильтр Калмана для очистки шума датчиков в бэктесте."""
+    """Kalman filter for sensor noise attenuation during backtesting."""
     def __init__(self, process_noise_std: float = 0.05, measurement_noise_std: float = 0.15, dt: float = 1.0):
         self.dt = dt
         self.F = np.array([[1.0, self.dt], [0.0, 1.0]], dtype=np.float64)
@@ -124,10 +124,10 @@ def calculate_metrics_by_horizons(
         return metrics_by_horizon
 
     for h in horizons_hours:
-        max_steps = int(h * 4)  # 15-минутные шаги (4 шага в час)
+        max_steps = int(h * 4)  # 15-minute steps (4 steps per hour)
         df_sub = df[df["horizon_step"] <= max_steps] if "horizon_step" in df.columns else df.copy()
         
-        # Точный разрез: окно в 1 час непосредственно на финише горизонта h
+        # Exact slice: 1-hour window at the horizon cutoff h
         min_exact = max(1, max_steps - 3)
         df_exact = df[(df["horizon_step"] >= min_exact) & (df["horizon_step"] <= max_steps)] if "horizon_step" in df.columns else df.copy()
 
@@ -181,12 +181,12 @@ def apply_full_correction_pipeline(
     settings: Dict[str, Any],
 ) -> Tuple[pd.DataFrame, Dict[str, pd.DataFrame]]:
     """
-    Полный каскад коррекций 1:1 с продакшн-сервисом app.py:
-    1. CatBoost Residual Boost (в нормализованном пространстве)
-    2. Kalman State Observer + 2-Stage PID Controller (в нормализованном пространстве)
-    3. Денормализация (Scaling Inversion)
-    4. Magnus-Tetens Equation Coupling для влажности RH(T) (Блок 7.2)
-    5. Solar Zenith Angle Inversion Correction (Блок 7.3)
+    Full correction pipeline 1:1 identical to app.py production service:
+    1. CatBoost Residual Boost (in normalized space)
+    2. Kalman State Observer + 2-Stage PID Controller (in normalized space)
+    3. Denormalization (Scaling Inversion)
+    4. Magnus-Tetens Equation Coupling for humidity RH(T) (Block 7.2)
+    5. Solar Zenith Angle Inversion Correction (Block 7.3)
     6. Rolling Bias Correction
     """
     target_cols = MODEL_TARGET_COLUMNS
@@ -201,7 +201,7 @@ def apply_full_correction_pipeline(
                 res_df[col] = res_df[col] * s_v + m_v
         return res_df
 
-    # 1. CatBoost Residual Correction (в нормализованном пространстве)
+    # 1. CatBoost Residual Correction (in normalized space)
     preds_corr_norm = preds_norm.copy()
     if residual_bundle is not None and residual_bundle.models:
         try:
@@ -217,7 +217,7 @@ def apply_full_correction_pipeline(
         except Exception:
             preds_corr_norm = preds_norm.copy()
 
-    # 2. Kalman Observer + 2-Stage PID (в нормализованном пространстве)
+    # 2. Kalman Observer + 2-Stage PID (in normalized space)
     df_sensors_norm = apply_scalers(df_sensors, station_scalers, NORMALIZE_COLUMNS)
     near_horizon_hours = settings.get("residual_boost", {}).get("near_horizon_hours", 6.0)
     split_step = int(near_horizon_hours * 4.0)
@@ -243,7 +243,7 @@ def apply_full_correction_pipeline(
         Kd_long = float(params.get("Kd_long", Kd_short))
         alpha_long = float(params.get("alpha_long", alpha_short))
 
-        # Weather Regime PID: Детекция погодного фронта по изменению давления dP/dt
+        # Weather Regime PID: Front detection based on barometric tendency dP/dt
         is_front_active = False
         if "pressure_trend_3h" in df_sensors.columns and len(df_sensors["pressure_trend_3h"]) > 0:
             p_trend = float(df_sensors["pressure_trend_3h"].iloc[-1])
@@ -260,7 +260,7 @@ def apply_full_correction_pipeline(
 
         int_limit = float(params.get("int_limit", 10.0))
 
-        # Калман-очистка шума сенсора
+        # Kalman sensor noise filtering
         if var_name in df_sensors_norm.columns:
             kalman_obs = KalmanStateObserver(process_noise_std=0.05, measurement_noise_std=0.15)
             sensor_series = df_sensors_norm[var_name].values
@@ -303,7 +303,7 @@ def apply_full_correction_pipeline(
             preds_corr_norm[t, idx] = preds_corr_norm[t, idx] - corr
             e_prev2 = e_prev
 
-    # 3. Денормализация
+    # 3. Denormalization
     preds_df = pd.DataFrame(preds_corr_norm, columns=target_cols)
     for col in target_cols:
         if col in station_scalers:
@@ -311,7 +311,7 @@ def apply_full_correction_pipeline(
             s_v = float(station_scalers[col]["std"])
             preds_df[col] = preds_df[col] * s_v + m_v
 
-    # 4. Magnus-Tetens Humidity Coupling (Блок 7.2)
+    # 4. Magnus-Tetens Humidity Coupling (Block 7.2)
     if "temperature" in preds_df.columns and "humidity" in preds_df.columns:
         temp_c = preds_df["temperature"].values
         humidity_raw = preds_df["humidity"].values
@@ -321,7 +321,7 @@ def apply_full_correction_pipeline(
         rh_phys = np.clip((e_td / np.maximum(es_t, 1e-6)) * 100.0, 5.0, 100.0)
         preds_df["humidity"] = 0.7 * rh_phys + 0.3 * humidity_raw
 
-    # 5. Solar Zenith Angle Inversion Correction (Блок 7.3)
+    # 5. Solar Zenith Angle Inversion Correction (Block 7.3)
     if "temperature" in preds_df.columns:
         w_u = preds_df["wind_u"].values if "wind_u" in preds_df.columns else np.zeros(len(preds_df))
         w_v = preds_df["wind_v"].values if "wind_v" in preds_df.columns else np.zeros(len(preds_df))
@@ -337,12 +337,12 @@ def apply_full_correction_pipeline(
             cloud_cover=c_cover
         )
 
-    # 6. Rolling Bias Correction (отключен завышающий оффсет для TFT)
+    # 6. Rolling Bias Correction (disabled offset inflation for TFT)
     pass
 
     pid_df = preds_df.copy()
 
-    # 7. Diurnal Solar Peak Thermal Boost (Усиление дневного максимума T_max)
+    # 7. Diurnal Solar Peak Thermal Boost (Daytime T_max enhancement)
     if "temperature" in preds_df.columns:
         t_vals = preds_df["temperature"].values.copy()
         for i, ts in enumerate(future_timestamps):
@@ -352,7 +352,7 @@ def apply_full_correction_pipeline(
                 t_vals[i] += float(0.6 * sun_boost)
         preds_df["temperature"] = t_vals
 
-    # 8. Night Warming Guard (Предохранитель от провала ночной температуры ниже -2.5°C от Open-Meteo)
+    # 8. Night Warming Guard (Protects nocturnal temperature from dropping >2.5°C below NWP)
     if "temperature" in preds_df.columns and "temperature_2m" in df_ext_cutoff.columns:
         t_vals = preds_df["temperature"].values.copy()
         ext_t = df_ext_cutoff["temperature_2m"].values
@@ -371,7 +371,7 @@ def apply_full_correction_pipeline(
     cb_df = _denorm(preds_corr_norm)
     pid_df = preds_df.copy()
 
-    # 7. Diurnal Solar Peak Thermal Boost (Усиление дневного максимума T_max)
+    # 7. Diurnal Solar Peak Thermal Boost (Daytime T_max enhancement)
     if "temperature" in preds_df.columns:
         t_vals = preds_df["temperature"].values.copy()
         for i, ts in enumerate(future_timestamps):
@@ -381,7 +381,7 @@ def apply_full_correction_pipeline(
                 t_vals[i] += float(0.6 * sun_boost)
         preds_df["temperature"] = t_vals
 
-    # 8. Night Warming Guard (Предохранитель от провала ночной температуры ниже -2.5°C от Open-Meteo)
+    # 8. Night Warming Guard (Protects nocturnal temperature from dropping >2.5°C below NWP)
     if "temperature" in preds_df.columns and "temperature_2m" in df_ext_cutoff.columns:
         t_vals = preds_df["temperature"].values.copy()
         ext_t = df_ext_cutoff["temperature_2m"].values
@@ -407,7 +407,7 @@ def apply_full_correction_pipeline(
 
 
 class BacktestEngine:
-    """Инсэмпл-движок для безопасной загрузки моделей и выполнения бэктеста."""
+    """In-sample inference engine for safe model loading and backtest execution."""
 
     def __init__(self):
         self.settings = load_settings()
@@ -423,7 +423,7 @@ class BacktestEngine:
         if self._initialized:
             return
 
-        # 1. Загрузка параметров PID
+        # 1. Load PID parameters
         pid_path = resolve_path(self.settings["paths"].get("pid_params_file", "config/pid_params.json"))
         if os.path.exists(pid_path):
             try:
@@ -434,7 +434,7 @@ class BacktestEngine:
                 import traceback
                 traceback.print_exc()
 
-        # 2. Загрузка конфигурации станций и скейлеров
+        # 2. Load station configuration and scalers
         stations_path = resolve_path(self.settings["paths"]["stations_config"])
         scalers_path = resolve_path(self.settings["paths"]["scalers_file"])
 
@@ -446,7 +446,7 @@ class BacktestEngine:
             with open(scalers_path, "r", encoding="utf-8") as f:
                 self._scalers = json.load(f)
 
-        # 3. Загрузка нейросети TFT
+        # 3. Load TFT neural network
         model_filename = self.settings["paths"].get("model_filename", "tft_model.pth")
         model_path = resolve_path(self.settings["paths"]["models_dir"], model_filename)
 
@@ -468,9 +468,9 @@ class BacktestEngine:
                 self._model.load_state_dict(state_dict)
                 self._model.eval()
             except Exception as e:
-                print(f"⚠️ Ошибка при загрузке модели TFT для бэктеста: {e}")
+                print(f"⚠️ Error loading TFT model for backtest: {e}")
 
-        # 4. Загрузка бандла CatBoost Residuals
+        # 4. Load CatBoost Residuals bundle
         res_dir = resolve_path(self.settings["paths"].get("residual_models_dir", "models/residual_catboost"))
         if os.path.exists(res_dir):
             try:
@@ -490,12 +490,12 @@ class BacktestEngine:
         progress_callback: Optional[Any] = None
     ) -> Tuple[pd.DataFrame, Dict[str, Dict[str, Any]]]:
         """
-        Выполняет итеративный скользящий слепой бэктест за указанное количество дней (days)
-        с шагом отсечки (step_hours).
+        Executes iterative rolling blind backtest over specified number of days
+        with cutoff step (step_hours).
         """
         self.initialize()
 
-        # Поиск информации о станции
+        # Locate station metadata
         station = next((s for s in self._stations if s["id"] == station_id), None)
         if not station:
             return pd.DataFrame(), {}
@@ -515,7 +515,7 @@ class BacktestEngine:
 
         df_sensors_all = pd.DataFrame()
 
-        # 1. Быстрая загрузка из обработанных паркетов (station_id или gen_id)
+        # 1. Fast loading from processed parquet (station_id or gen_id)
         if os.path.exists(parquet_file_id):
             try:
                 df_sensors_all = pd.read_parquet(parquet_file_id)
@@ -531,7 +531,7 @@ class BacktestEngine:
                 import traceback
                 traceback.print_exc()
 
-        # 2. Фолбэк на сырой JSON
+        # 2. Fallback to raw JSON
         if df_sensors_all.empty and os.path.exists(raw_json_file_gen):
             try:
                 df_raw = load_raw_station_json(raw_json_file_gen)
@@ -552,7 +552,7 @@ class BacktestEngine:
                 import traceback
                 traceback.print_exc()
 
-        # 2. Фолбэк на API ClimateNet только если локальных файлов нет
+        # 2. Fallback to ClimateNet API only if local files are missing
         if df_sensors_all.empty:
             now_dt = datetime.now()
             start_dt = now_dt - timedelta(days=int(days) + 7)
@@ -605,13 +605,13 @@ class BacktestEngine:
                 progress_val = min(1.0, current_iter / total_iterations)
                 progress_callback(progress_val)
 
-            # История датчиков строго до момента отсечки T
+            # Sensor history strictly prior to cutoff timestamp T
             df_sensor_cutoff = df_sensors_all[df_sensors_all["timestamp"] <= current_cutoff].tail(lookback_steps + 20).copy()
             if len(df_sensor_cutoff) < lookback_steps:
                 current_cutoff += timedelta(hours=step_hours)
                 continue
 
-            # Внешний прогноз на 48 часов вперед
+            # Future 48h external NWP forecast
             future_cutoff_end = current_cutoff + timedelta(hours=int(horizon_steps * 15 / 60))
             df_ext_cutoff = df_ext_all[
                 (df_ext_all["timestamp"] >= current_cutoff) &
@@ -649,7 +649,7 @@ class BacktestEngine:
                         else:
                             preds_norm = raw_pred
 
-                    # Полный каскад коррекций 1:1 с продакшн-сервисом app.py
+                    # Full correction cascade 1:1 identical to app.py production service
                     preds_df, stage_dfs = apply_full_correction_pipeline(
                         preds_norm=preds_norm,
                         df_sensors=df_sensor_cutoff,
@@ -669,7 +669,7 @@ class BacktestEngine:
                         "rain": df_ext_cutoff["precipitation"].values[:len(future_timestamps)],
                     })
 
-                # Извлечение фактических измерений
+                # Extract ground truth observations
                 df_actuals_horizon = df_sensors_all[
                     df_sensors_all["timestamp"].isin(future_timestamps)
                 ].set_index("timestamp")
@@ -728,7 +728,7 @@ class BacktestEngine:
         df_grouped = df_res.groupby("timestamp").mean(numeric_only=True).reset_index()
         metrics_by_horizon = calculate_metrics_by_horizons(df_res, horizons_hours=[1, 6, 12, 18, 24, 36, 48])
 
-        # Расчет вклада каждого компонента каскада (Component Impact Analysis)
+        # Component Impact Analysis across pipeline stages
         try:
             m_raw = calculate_metrics_by_horizons(pd.DataFrame(raw_records)) if raw_records else {}
             m_cb = calculate_metrics_by_horizons(pd.DataFrame(cb_records)) if cb_records else {}
@@ -745,7 +745,7 @@ class BacktestEngine:
         return df_grouped, metrics_by_horizon
 
 
-# Синглтон движка
+# Engine Singleton
 _global_engine = BacktestEngine()
 
 def run_backtest_service(station_id: int, days: int, step_hours: int, progress_callback: Optional[Any] = None):

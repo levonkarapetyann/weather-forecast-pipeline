@@ -1,16 +1,16 @@
 """
 =============================================================================
-МОДУЛЬ: TFT Neural Network Architecture (model.py)
+MODULE: TFT Neural Network Architecture (model.py)
 -----------------------------------------------------------------------------
-НАЗНАЧЕНИЕ:
-Определение глубокой нейросетевой архитектуры Temporal Fusion Transformer (TFT)
-и специализированных функций потерь.
+PURPOSE:
+Definition of deep Temporal Fusion Transformer (TFT) neural network architecture
+and specialized loss functions.
 
-ОСНОВНЫЕ КОМПОНЕНТЫ:
-1. `TFTForecaster`: архитектура нейросети с механизмами Interpretable Multi-Head
-   Attention, Variable Selection Networks и LSTM селекторами контекста.
-2. `ClimateDataset`: класс подготовки скользящих окон временных рядов (96 шагов).
-3. Набор лосс-функций: Pinball Loss (Quantile Loss), Huber Loss и BCE Rain Loss.
+KEY COMPONENTS:
+1. `TFTForecaster`: neural network architecture with Interpretable Multi-Head
+   Attention, Variable Selection Networks, and LSTM context selectors.
+2. `ClimateDataset`: sliding window dataset preparation class (96 steps).
+3. Specialized loss functions: Pinball Loss (Quantile Loss), Huber Loss, and BCE Rain Loss.
 =============================================================================
 """
 
@@ -29,7 +29,7 @@ from data_pipeline import (EXTERNAL_FORECAST_COLUMNS, MODEL_SENSOR_COLUMNS,
                            MODEL_STATIC_COLUMNS, MODEL_TARGET_COLUMNS,
                            normalize_multimodel_external_df)
 
-# Загружаем настройки из конфига
+# Load settings from central config
 settings_file = os.path.join("config", "settings.json")
 if os.path.exists(settings_file):
     with open(settings_file, "r", encoding="utf-8") as f:
@@ -51,8 +51,8 @@ else:
 
 class HomoscedasticUncertaintyLoss(nn.Module):
     """
-    Стабильное мультизадачное взвешивание лоссов через Softmax-нормировку.
-    Гарантирует, что сумма весов задач равна 1.0, а итоговый лосс строго положительный (>= 0).
+    Stable multi-task loss weighting via Softmax normalization.
+    Guarantees that the sum of task weights equals 1.0 and total loss remains strictly positive (>= 0).
     """
 
     def __init__(self, num_tasks: int = 12, min_task_weights: torch.Tensor = None):
@@ -63,7 +63,7 @@ class HomoscedasticUncertaintyLoss(nn.Module):
 
     def forward(self, task_losses: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        task_losses: (num_tasks,) — скалярный лосс по каждой переменной
+        task_losses: (num_tasks,) - scalar loss for each target variable
         returns: (total_loss, effective_weights)
         """
         softmax_weights = F.softmax(self.task_logits, dim=0)
@@ -77,20 +77,20 @@ class HomoscedasticUncertaintyLoss(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# ClimateDataset — без изменений, интерфейс тот же самый
+# ClimateDataset - standard sliding window dataset
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Квантили для вероятностного прогноза (Pinball Loss)
+# Quantiles for probabilistic forecasting (Pinball Loss)
 # ---------------------------------------------------------------------------
-QUANTILES = [0.1, 0.5, 0.9]       # P10, медиана, P90
+QUANTILES = [0.1, 0.5, 0.9]       # P10, median, P90
 NUM_QUANTILES = len(QUANTILES)     # 3
 
 
 class ClimateDataset(Dataset):
     """
-    Класс датасета для подготовки окон данных для обучения TFT модели.
-    Интерфейс полностью совместим с предыдущей Seq2Seq реализацией.
+    Dataset class for preparing time series windows for TFT model training.
+    Interface fully compatible with sequence forecasting pipelines.
     """
 
     def __init__(
@@ -102,7 +102,7 @@ class ClimateDataset(Dataset):
         self.lookback_steps = settings["model"]["lookback_steps"]
         self.horizon_steps = settings["model"]["horizon_steps"]
 
-        # 1. Статические характеристики станции с глобальной нормализацией
+        # 1. Static station features with global normalization
         raw_static = np.array(
             [float(features_df[col].iloc[0]) for col in MODEL_STATIC_COLUMNS],
             dtype=np.float32,
@@ -113,7 +113,7 @@ class ClimateDataset(Dataset):
             (raw_static[2] - 1400.0) / 450.0   # elevation_m
         ], dtype=np.float32)
 
-        # 2. Временные ряды датчиков
+        # 2. Historical sensor time series
         sensor_cols = MODEL_SENSOR_COLUMNS
         sensor_frame = pd.DataFrame(index=features_df.index)
         for col in sensor_cols:
@@ -122,19 +122,19 @@ class ClimateDataset(Dataset):
             else:
                 sensor_frame[col] = 0.0
         sensor_frame = sensor_frame.replace([np.inf, -np.inf], np.nan)
-        # Сохраняем маску NaN для диагностики перед заполнением нулями
+        # Save NaN mask for diagnostics prior to zero imputation
         self.sensor_data = sensor_frame.fillna(0.0).values.astype(np.float32)
 
-        # 3. Таргеты (11 погодных переменных)
+        # 3. Targets (meteorological variables)
         target_cols = MODEL_TARGET_COLUMNS
         target_frame = features_df[target_cols].copy()
         target_frame = target_frame.replace([np.inf, -np.inf], np.nan)
-        # Сохраняем сырые данные (с NaN) для корректной фильтрации окон
+        # Save raw data (with NaNs) for valid window filtering
         self._raw_target_data = target_frame.values.astype(np.float32)
-        # Заполненная версия — для обучения (NaN → 0.0)
+        # Imputed version for model training (NaN -> 0.0)
         self.target_data = np.nan_to_num(self._raw_target_data, nan=0.0)
 
-        # 4. Выравниваем по времени внешние мультимодельные прогнозы (Open-Meteo + Meteostat + Spread)
+        # 4. Temporally align external multi-model forecasts (Open-Meteo + NWP Ensemble)
         ext_cols = EXTERNAL_FORECAST_COLUMNS
         if not external_df.empty and "timestamp" in external_df.columns:
             ext_df_15m = external_df.set_index("timestamp").resample("15min").ffill().reset_index()
@@ -148,7 +148,7 @@ class ClimateDataset(Dataset):
 
         merged[ext_cols] = merged[ext_cols].replace([np.inf, -np.inf], np.nan).ffill().bfill().fillna(0.0)
 
-        # Если скейлеры не переданы явно, пробуем загрузить их из scalers.json
+        # If scalers are not provided explicitly, load from scalers.json
         station_id = int(features_df["id"].iloc[0]) if "id" in features_df.columns else None
         if scalers is None and station_id is not None:
             scalers_file = os.path.join("config", "scalers.json")
@@ -162,16 +162,16 @@ class ClimateDataset(Dataset):
                 except Exception as e:
                     print(f"Error loading scalers in ClimateDataset: {e}")
 
-        # Нормализация внешних мультимодельных прогнозов
+        # Normalization of external multi-model forecasts
         merged_norm = normalize_multimodel_external_df(merged[ext_cols], scalers)
         self.external_data = merged_norm[ext_cols].values.astype(np.float32)
 
-        # 5. Генерируем скользящие окна с шагом из конфига (по умолчанию 24 шага = 6 часов)
+        # 5. Generate sliding windows with step from config (default: 24 steps = 6 hours)
         self.valid_indices = []
         total_steps = len(features_df)
         window_step = settings.get("model", {}).get("window_step", 24)
         for i in range(0, total_steps - self.lookback_steps - self.horizon_steps + 1, window_step):
-            # Проверяем NaN на СЫРЫХ данных (до fillna), иначе проверка бессмысленна
+            # Check NaNs on RAW data (before fillna) to prevent empty sequences
             raw_target_window = self._raw_target_data[i + self.lookback_steps: i + self.lookback_steps + self.horizon_steps]
             if np.isnan(raw_target_window).mean() <= 0.5:
                 self.valid_indices.append(i)
@@ -205,11 +205,11 @@ class ClimateDataset(Dataset):
 
 
 # ---------------------------------------------------------------------------
-# Функция потерь — с поддержкой весов
+# Loss function with target weighting
 # ---------------------------------------------------------------------------
 
 def masked_mse_loss(preds: torch.Tensor, targets: torch.Tensor, weights: torch.Tensor = None) -> torch.Tensor:
-    """MSE лосс с маскированием NaN значений в таргете и взвешиванием признаков."""
+    """MSE loss with NaN target masking and feature weighting."""
     mask = ~torch.isnan(targets)
     if not mask.any():
         return torch.tensor(0.0, requires_grad=True, device=preds.device)
@@ -222,7 +222,7 @@ def masked_mse_loss(preds: torch.Tensor, targets: torch.Tensor, weights: torch.T
 
 
 def masked_huber_loss(preds: torch.Tensor, targets: torch.Tensor, weights: torch.Tensor = None, delta: float = 1.0) -> torch.Tensor:
-    """Huber (Smooth L1) лосс с маскированием NaN значений в таргете и взвешиванием признаков."""
+    """Huber (Smooth L1) loss with NaN target masking and feature weighting."""
     mask = ~torch.isnan(targets)
     if not mask.any():
         return torch.tensor(0.0, requires_grad=True, device=preds.device)
@@ -236,14 +236,14 @@ def masked_huber_loss(preds: torch.Tensor, targets: torch.Tensor, weights: torch
 
 def masked_asymmetric_huber_loss(preds: torch.Tensor, targets: torch.Tensor, weights: torch.Tensor = None, tau: float = 0.65, delta: float = 1.0) -> torch.Tensor:
     """
-    Асимметричный Huber (Pinball) лосс.
-    Штрафует занижение таргета (preds < targets) сильнее, чем завышение, если tau > 0.5.
+    Asymmetric Huber (Pinball) loss.
+    Penalizes target underestimation (preds < targets) more than overestimation when tau > 0.5.
     """
     mask = ~torch.isnan(targets)
     if not mask.any():
         return torch.tensor(0.0, requires_grad=True, device=preds.device)
 
-    err = targets - preds  # Положительная ошибка = занижение модели
+    err = targets - preds  # Positive error = model underestimation
     huber = F.smooth_l1_loss(preds, targets, reduction="none", beta=delta)
     asym_weight = torch.where(err > 0, tau, 1.0 - tau)
     loss = huber * asym_weight
@@ -257,7 +257,7 @@ def masked_asymmetric_huber_loss(preds: torch.Tensor, targets: torch.Tensor, wei
 def masked_slope_loss(preds: torch.Tensor, targets: torch.Tensor, weights: torch.Tensor = None) -> torch.Tensor:
     """
     Temporal Derivative (Slope) Loss.
-    Штрафует за несоответствие первых производных по времени (фазовое запаздывание пиков).
+    Penalizes discrepancies in temporal first derivatives (phase lag of peak events).
     """
     if preds.shape[1] <= 1:
         return torch.tensor(0.0, requires_grad=True, device=preds.device)
@@ -283,23 +283,23 @@ def masked_pinball_loss(
     weights: torch.Tensor = None,
 ) -> torch.Tensor:
     """
-    Pinball Loss (Quantile Loss) по трём квантилям.
+    Pinball Loss (Quantile Loss) across three quantiles.
 
     Args:
-        preds_q: (B, T, num_targets * num_quantiles) — квантильные предсказания,
-                 сгруппированные как [target_0_q0, target_0_q1, target_0_q2,
+        preds_q: (B, T, num_targets * num_quantiles) - quantile predictions,
+                 grouped as [target_0_q0, target_0_q1, target_0_q2, ...],
                                        target_1_q0, ..., target_N_q2]
-        targets:  (B, T, num_targets) — истинные значения
-        quantiles: список значений квантилей [0.1, 0.5, 0.9]
-        weights:  (num_targets,) — веса по целевым переменным
+        targets:  (B, T, num_targets) - ground truth values
+        quantiles: list of quantile values [0.1, 0.5, 0.9]
+        weights:  (num_targets,) - target feature weights
     Returns:
-        Скалярный Loss
+        Scalar loss tensor
     """
     num_q = len(quantiles)
     B, T, total = preds_q.shape
     num_targets = targets.shape[-1]
 
-    # Перестраиваем в (B, T, num_targets, num_quantiles)
+    # Reshape to (B, T, num_targets, num_quantiles)
     preds_q = preds_q.view(B, T, num_targets, num_q)
 
     total_loss = torch.tensor(0.0, device=preds_q.device)
@@ -310,7 +310,7 @@ def masked_pinball_loss(
         mask = ~torch.isnan(targets)
         if not mask.any():
             continue
-        err = targets - pred       # положительная ошибка — недооценка
+        err = targets - pred       # positive error = underestimation
         pinball = torch.where(err >= 0, tau * err, (tau - 1.0) * err)  # (B, T, targets)
         pinball = torch.where(mask, pinball, torch.zeros_like(pinball))
 
@@ -326,16 +326,16 @@ def masked_pinball_loss(
 def masked_rain_event_loss(
     preds: torch.Tensor,
     targets: torch.Tensor,
-    rain_binary_index: int = 11,    # Индекс rain_binary в MODEL_TARGET_COLUMNS (12-й канал)
+    rain_binary_index: int = 11,    # Index of rain_binary in MODEL_TARGET_COLUMNS (12th channel)
     weight: float = 1.0,
-    pos_weight: float = None,       # Вес для балансировки: n_negative / n_positive
+    pos_weight: float = None,       # Weight for class balancing: n_negative / n_positive
 ) -> torch.Tensor:
     """
-    BCE-loss для прогноза «дождь/нет дождя» по выделенному 12-му каналу rain_binary.
-    Использует чистый sigmoid и pos_weight для балансировки классов.
+    BCE loss for binary rain occurrence on channel rain_binary.
+    Uses sigmoid activations with pos_weight for class imbalance correction.
     """
-    binary_target = targets[..., rain_binary_index]    # (B, T) — уже готовый 0/1 таргет
-    binary_pred = preds[..., rain_binary_index]      # (B, T) — логиты из модели
+    binary_target = targets[..., rain_binary_index]    # (B, T) - ground truth 0/1 target
+    binary_pred = preds[..., rain_binary_index]      # (B, T) - model raw logits
     valid_mask = ~torch.isnan(binary_target)
     if not valid_mask.any():
         return torch.tensor(0.0, requires_grad=True, device=preds.device)
@@ -343,7 +343,7 @@ def masked_rain_event_loss(
     pred_prob = torch.sigmoid(binary_pred[valid_mask])
     true_labels = torch.nan_to_num(binary_target[valid_mask], nan=0.0)
 
-    # pos_weight компенсирует дисбаланс классов (n_dry / n_rain)
+    # pos_weight compensates for class imbalance (n_dry / n_rain)
     if pos_weight is not None:
         pw = torch.tensor(float(pos_weight), dtype=torch.float32, device=preds.device)
         bce = F.binary_cross_entropy(pred_prob, true_labels, reduction="none")
@@ -360,9 +360,9 @@ def masked_rain_event_loss(
 
 class GRN(nn.Module):
     """
-    Gated Residual Network — базовый блок TFT.
-    Принимает на вход x и опциональный контекстный вектор c,
-    возвращает нелинейно преобразованный выход с gate-механизмом и skip-connection.
+    Gated Residual Network (GRN) - fundamental building block of TFT.
+    Accepts input x and optional context vector c,
+    returns non-linearly transformed output with gating mechanism and skip-connection.
     """
 
     def __init__(
@@ -379,7 +379,7 @@ class GRN(nn.Module):
 
         self.input_proj = nn.Linear(input_size, hidden_size)
         self.context_proj = nn.Linear(context_size, hidden_size, bias=False) if context_size else None
-        # Выход *2 для GLU: первая половина — значения, вторая — gate
+        # Output *2 for GLU: first half - values, second half - gate
         self.fc2 = nn.Linear(hidden_size, output_size * 2)
         self.skip = nn.Linear(input_size, output_size) if input_size != output_size else nn.Identity()
         self.norm = nn.LayerNorm(output_size)
@@ -401,8 +401,8 @@ class GRN(nn.Module):
 class VariableSelectionNetwork(nn.Module):
     """
     Variable Selection Network (VSN).
-    Обучаемо взвешивает важность каждого входного признака на каждом временном шаге.
-    Позволяет интерпретировать, какие датчики/прогнозы наиболее значимы.
+    Learnable feature selection weighting for input variables across temporal steps.
+    Enables interpretability of sensor and NWP forecast contributions.
     """
 
     def __init__(
@@ -416,11 +416,11 @@ class VariableSelectionNetwork(nn.Module):
         self.num_vars = num_vars
         self.hidden_size = hidden_size
 
-        # Каждая переменная (скаляр) → hidden_size
+        # Each scalar variable -> hidden_size projection
         self.var_projs = nn.ModuleList([nn.Linear(1, hidden_size) for _ in range(num_vars)])
-        # Индивидуальный GRN для каждой переменной
+        # Individual GRN for each variable
         self.var_grns = nn.ModuleList([GRN(hidden_size, hidden_size, dropout=dropout) for _ in range(num_vars)])
-        # GRN для вычисления весов отбора (на входе — конкатенация всех переменных)
+        # GRN for computing selection weights (input: flattened variables)
         self.softmax_grn = GRN(
             input_size=num_vars * hidden_size,
             hidden_size=hidden_size,
@@ -431,16 +431,16 @@ class VariableSelectionNetwork(nn.Module):
 
     def forward(self, x: torch.Tensor, context: torch.Tensor = None):
         """
-        x: (B, T, num_vars) или (B, num_vars) для статических переменных
-        context: (B, context_size) — статический контекст
-        Возвращает: selected (B, T, hidden_size), weights (B, T, num_vars)
+        x: (B, T, num_vars) or (B, num_vars) for static variables
+        context: (B, context_size) - static context vector
+        Returns: selected (B, T, hidden_size), weights (B, T, num_vars)
         """
         has_time = x.dim() == 3
         if not has_time:
             x = x.unsqueeze(1)   # (B, 1, num_vars)
         B, T, _ = x.shape
 
-        # Проецируем и обрабатываем каждую переменную отдельно
+        # Project and process each variable independently
         var_outputs = []
         for i, (proj, grn) in enumerate(zip(self.var_projs, self.var_grns)):
             v = proj(x[:, :, i: i + 1])       # (B, T, H)
@@ -450,17 +450,17 @@ class VariableSelectionNetwork(nn.Module):
         # stacked: (B, T, num_vars, H)
         stacked = torch.stack(var_outputs, dim=2)
 
-        # Flatten для GRN отбора: (B, T, num_vars * H)
+        # Flatten for selection GRN: (B, T, num_vars * H)
         flat = stacked.view(B, T, -1)
 
-        # Веса важности переменных с опциональным контекстом
+        # Variable selection weights with optional context
         if context is not None:
             ctx = context.unsqueeze(1).expand(-1, T, -1)      # (B, T, context_size)
             weights = F.softmax(self.softmax_grn(flat, ctx), dim=-1)  # (B, T, num_vars)
         else:
             weights = F.softmax(self.softmax_grn(flat), dim=-1)
 
-        # Взвешенная сумма: (B, T, H)
+        # Weighted linear combination: (B, T, H)
         selected = (weights.unsqueeze(-1) * stacked).sum(dim=2)
 
         if not has_time:
@@ -472,12 +472,12 @@ class VariableSelectionNetwork(nn.Module):
 
 class StaticCovariateEncoder(nn.Module):
     """
-    Кодировщик статических ковариат (координаты станции, высота).
-    Генерирует 4 контекстных вектора:
-      cs — контекст для Variable Selection Networks
-      ce — инициализация скрытого состояния Encoder LSTM
-      cd — инициализация скрытого состояния Decoder LSTM
-      ch — контекст для Temporal Self-Attention
+    Static Covariate Encoder (latitude, longitude, elevation).
+    Generates 4 distinct context vectors:
+      cs - context for Variable Selection Networks
+      ce - initialization for Encoder LSTM hidden state
+      cd - initialization for Decoder LSTM hidden state
+      ch - context for Temporal Self-Attention enrichment
     """
 
     def __init__(self, num_static: int, hidden_size: int, dropout: float = 0.1):
@@ -489,28 +489,28 @@ class StaticCovariateEncoder(nn.Module):
         self.ch_grn = GRN(hidden_size, hidden_size, dropout=dropout)
 
     def forward(self, static: torch.Tensor):
-        """static: (B, num_static) → cs, ce, cd, ch: каждый (B, hidden_size)"""
+        """static: (B, num_static) -> cs, ce, cd, ch: each of shape (B, hidden_size)"""
         s = self.embedding(static)
         return self.cs_grn(s), self.ce_grn(s), self.cd_grn(s), self.ch_grn(s)
 
 
 class InterpretableMultiHeadAttention(nn.Module):
     """
-    Интерпретируемое Multi-Head Attention из TFT.
-    Использует разделённую матрицу значений (V) между всеми головами —
-    это позволяет усреднять веса внимания по головам для интерпретации.
+    Interpretable Multi-Head Attention from TFT.
+    Shares the value projection (V) across all attention heads,
+    enabling direct interpretation of attention weights over time.
     """
 
     def __init__(self, num_heads: int, hidden_size: int, dropout: float = 0.1):
         super().__init__()
-        assert hidden_size % num_heads == 0, "hidden_size должен делиться на num_heads"
+        assert hidden_size % num_heads == 0, "hidden_size must be divisible by num_heads"
         self.num_heads = num_heads
         self.head_size = hidden_size // num_heads
         self.hidden_size = hidden_size
 
         self.W_q = nn.Linear(hidden_size, hidden_size)
         self.W_k = nn.Linear(hidden_size, hidden_size)
-        # Общий проектор V (interpretable — один на все головы)
+        # Shared value projection V (interpretable - shared across all heads)
         self.W_v = nn.Linear(hidden_size, self.head_size)
         self.W_o = nn.Linear(hidden_size, hidden_size)
         self.dropout = nn.Dropout(dropout)
@@ -518,7 +518,7 @@ class InterpretableMultiHeadAttention(nn.Module):
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
         """
         q, k, v: (B, T, H)
-        Возвращает: output (B, T, H), attention_weights (B, T, T)
+        Returns: output (B, T, H), attention_weights (B, T, T)
         """
         B, T, _ = q.shape
         H, HS = self.num_heads, self.head_size
@@ -526,7 +526,7 @@ class InterpretableMultiHeadAttention(nn.Module):
         # Q, K: (B, H, T, head_size)
         Q = self.W_q(q).view(B, T, H, HS).transpose(1, 2)
         K = self.W_k(k).view(B, T, H, HS).transpose(1, 2)
-        # V общий: (B, 1, T, head_size) → (B, H, T, head_size)
+        # Shared V: (B, 1, T, head_size) -> (B, H, T, head_size)
         V = self.W_v(v).unsqueeze(1).expand(-1, H, -1, -1)
 
         scale = HS ** 0.5
@@ -539,7 +539,7 @@ class InterpretableMultiHeadAttention(nn.Module):
         out = out.transpose(1, 2).contiguous().view(B, T, self.hidden_size)
         out = self.W_o(out)
 
-        # Усредняем веса по головам для интерпретации
+        # Average attention weights across heads for interpretability
         avg_attn = attn.mean(dim=1)   # (B, T, T)
         return out, avg_attn
 
@@ -550,26 +550,26 @@ class InterpretableMultiHeadAttention(nn.Module):
 
 class TFTForecaster(nn.Module):
     """
-    Temporal Fusion Transformer (Lim et al., 2019) для гиперлокального
-    прогнозирования погоды.
+    Temporal Fusion Transformer (Lim et al., 2019) for hyperlocal
+    weather forecasting.
 
-    Входные данные явно разделены на три типа:
-      - Статические ковариаты: широта, долгота, высота над уровнем моря
-      - Наблюдаемые временные ряды (encoder): история датчиков за 24ч (96 шагов)
-      - Известное будущее (decoder): прогноз Open-Meteo на 48ч (192 шага)
+    Input data is partitioned into three distinct modalities:
+      - Static covariates: latitude, longitude, elevation_m
+      - Observed historical time series (encoder): 24h sensor history (96 steps)
+      - Known future covariates (decoder): 48h Open-Meteo forecast (192 steps)
 
-        Сигнатура forward совместима с Seq2SeqForecaster:
-            encoder_input: (B, 96, num_encoder_vars + 3) — конкатенация [сенсоры | 3 статических]
-            decoder_input: (B, 192, 8)  — 8 внешних прогнозных признаков
-            return:        (B, 192, 11) — 11 прогнозируемых метеопеременных
+        Forward signature:
+            encoder_input: (B, 96, num_encoder_vars + 3) - [sensors | 3 static covariates]
+            decoder_input: (B, 192, 8) - 8 external NWP forecast features
+            return:        (B, 192, 12) - predicted target meteorological variables
     """
 
     def __init__(
         self,
-        num_encoder_vars: int = len(MODEL_SENSOR_COLUMNS),    # 16 (включая dew_point_deficit)
+        num_encoder_vars: int = len(MODEL_SENSOR_COLUMNS),    # 16 (including physical features)
         num_decoder_vars: int = len(EXTERNAL_FORECAST_COLUMNS), # 8 (Open-Meteo)
         num_static_vars: int = len(MODEL_STATIC_COLUMNS),     # 3
-        output_size: int = len(MODEL_TARGET_COLUMNS),          # 12 (включая rain_binary)
+        output_size: int = len(MODEL_TARGET_COLUMNS),          # 12 (including rain_binary)
         hidden_size: int = 128,
         num_heads: int = 4,
         num_lstm_layers: int = 2,
@@ -593,8 +593,8 @@ class TFTForecaster(nn.Module):
         self.enc_lstm = nn.LSTM(hidden_size, hidden_size, num_lstm_layers, batch_first=True, dropout=lstm_dropout)
         self.dec_lstm = nn.LSTM(hidden_size, hidden_size, num_lstm_layers, batch_first=True, dropout=lstm_dropout)
 
-        # Нормализация после LSTM (Gating + Add & Norm)
-        self.enc_gate = nn.Linear(hidden_size, hidden_size * 2)   # для GLU
+        # Post-LSTM normalization (Gating + Add & Norm)
+        self.enc_gate = nn.Linear(hidden_size, hidden_size * 2)   # for GLU
         self.dec_gate = nn.Linear(hidden_size, hidden_size * 2)
         self.enc_norm = nn.LayerNorm(hidden_size)
         self.dec_norm = nn.LayerNorm(hidden_size)
@@ -612,7 +612,7 @@ class TFTForecaster(nn.Module):
         self.ff_gate = nn.Linear(hidden_size, hidden_size * 2)
         self.ff_norm = nn.LayerNorm(hidden_size)
 
-        # --- Output projection (Прямая проекция в output_size целевых переменных) ---
+        # --- Output projection (Direct linear projection into output_size targets) ---
         self.output_size = output_size
         self.output_proj = nn.Linear(hidden_size, output_size)
 
@@ -625,42 +625,42 @@ class TFTForecaster(nn.Module):
         return norm(gated + residual)
 
     def _init_lstm_state(self, context: torch.Tensor):
-        """Инициализирует (h0, c0) для LSTM из контекстного вектора."""
+        """Initializes (h0, c0) for LSTM from static context vector."""
         h0 = context.unsqueeze(0).repeat(self.num_lstm_layers, 1, 1)  # (L, B, H)
         c0 = torch.zeros_like(h0)
         return h0, c0
 
     def forward(self, encoder_input: torch.Tensor, decoder_input: torch.Tensor) -> torch.Tensor:
         """
-        encoder_input: (B, lookback, num_encoder_vars + 3) — [датчики | 3 статических] (конкатенация)
-        decoder_input: (B, horizon,  8) — внешние прогнозы Open-Meteo
-        return:        (B, horizon, 11) — прогноз метеопеременных
+        encoder_input: (B, lookback, num_encoder_vars + 3) - [sensors | 3 static covariates]
+        decoder_input: (B, horizon, 8) - external NWP forecasts
+        return:        (B, horizon, 12) - meteorological forecasts
         """
         horizon = decoder_input.size(1)
 
         # ---------------------------------------------------------------
-        # 1. Разделяем encoder_input на сенсорные ряды и статику
+        # 1. Split encoder_input into sensor series and static features
         # ---------------------------------------------------------------
         sensor_seq = encoder_input[:, :, :self.num_encoder_vars]   # (B, 96, 15)
-        static_raw = encoder_input[:, 0, self.num_encoder_vars:]   # (B, 3) — статика одинакова на всех шагах
+        static_raw = encoder_input[:, 0, self.num_encoder_vars:]   # (B, 3) - static features invariant over time
 
         # ---------------------------------------------------------------
-        # 2. Кодируем статические ковариаты → 4 контекстных вектора
+        # 2. Encode static covariates into 4 distinct context vectors
         # ---------------------------------------------------------------
         cs, ce, cd, ch = self.static_encoder(static_raw)
-        # cs: контекст для VSN
-        # ce: инициализация encoder LSTM
-        # cd: инициализация decoder LSTM
-        # ch: контекст для temporal attention
+        # cs: context for VSN
+        # ce: initialization for encoder LSTM
+        # cd: initialization for decoder LSTM
+        # ch: context for temporal attention
 
         # ---------------------------------------------------------------
-        # 3. Variable Selection (отбор значимых признаков)
+        # 3. Variable Selection Networks
         # ---------------------------------------------------------------
         enc_selected, self.last_enc_var_weights = self.enc_vsn(sensor_seq, context=cs)    # (B, 96, H)
         dec_selected, self.last_dec_var_weights = self.dec_vsn(decoder_input, context=cs)  # (B, 192, H)
 
         # ---------------------------------------------------------------
-        # 4. Encoder LSTM — обрабатывает историю датчиков
+        # 4. Encoder LSTM - processes historical sensor sequence
         # ---------------------------------------------------------------
         h0_enc, c0_enc = self._init_lstm_state(ce)
         enc_lstm_out, (h_final, c_final) = self.enc_lstm(enc_selected, (h0_enc, c0_enc))
@@ -668,20 +668,20 @@ class TFTForecaster(nn.Module):
         enc_out = self._glu(enc_lstm_out, self.enc_gate, enc_selected, self.enc_norm)  # (B, 96, H)
 
         # ---------------------------------------------------------------
-        # 5. Decoder LSTM — обрабатывает будущие прогнозы Open-Meteo
-        #    Инициализируется финальным состоянием encoder (теплый старт)
+        # 5. Decoder LSTM - processes future NWP forecast features
+        #    Initialized with final encoder state (warm start)
         # ---------------------------------------------------------------
         dec_lstm_out, _ = self.dec_lstm(dec_selected, (h_final, c_final))
         # Gating + Add & Norm (decoder)
         dec_out = self._glu(dec_lstm_out, self.dec_gate, dec_selected, self.dec_norm)  # (B, 192, H)
 
         # ---------------------------------------------------------------
-        # 6. Объединяем encoder и decoder для Temporal Self-Attention
+        # 6. Concatenate encoder and decoder representations for Temporal Self-Attention
         # ---------------------------------------------------------------
         combined = torch.cat([enc_out, dec_out], dim=1)   # (B, 288, H)
 
         # ---------------------------------------------------------------
-        # 7. Static Enrichment — обогащаем статическим контекстом
+        # 7. Static Enrichment - enrich with static context
         # ---------------------------------------------------------------
         ch_exp = ch.unsqueeze(1).expand(-1, combined.size(1), -1)   # (B, 288, H)
         enriched = self.static_enrichment(combined, context=ch_exp)  # (B, 288, H)
@@ -700,23 +700,23 @@ class TFTForecaster(nn.Module):
         enriched = self._glu(ff_out, self.ff_gate, enriched, self.ff_norm)        # (B, 288, H)
 
         # ---------------------------------------------------------------
-        # 10. Берём только шаги декодера (последние horizon шагов)
+        # 10. Extract decoder steps (last horizon steps)
         # ---------------------------------------------------------------
         dec_final = enriched[:, -horizon:, :]    # (B, 192, H)
 
         # ---------------------------------------------------------------
-        # 11. Проецируем в целевые переменные (B, horizon, output_size)
+        # 11. Project into target variables (B, horizon, output_size)
         # ---------------------------------------------------------------
         return self.output_proj(dec_final)
 
 
 
 # ===========================================================================
-# Точка входа для быстрой проверки архитектуры
+# Entry point for architecture sanity check
 # ===========================================================================
 
 if __name__ == "__main__":
-    print("--- Проверка архитектуры Temporal Fusion Transformer ---")
+    print("--- Temporal Fusion Transformer Architecture Check ---")
 
     tft_cfg = settings.get("tft", {})
     model = TFTForecaster(
@@ -727,31 +727,31 @@ if __name__ == "__main__":
     )
 
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Всего обучаемых параметров: {total_params:,}")
+    print(f"Total trainable parameters: {total_params:,}")
 
-    # Имитируем батч из 4 примеров
+    # Simulate batch of 4 examples
     dummy_enc_features = len(MODEL_SENSOR_COLUMNS) + len(MODEL_STATIC_COLUMNS)
     dummy_enc = torch.randn(4, 96, dummy_enc_features)
-    dummy_dec = torch.randn(4, 192, 8)   # 8 внешних прогнозных признаков
+    dummy_dec = torch.randn(4, 192, 8)   # 8 external NWP forecast features
 
     out = model(dummy_enc, dummy_dec)
 
     print(f"encoder_input : {dummy_enc.shape}")
     print(f"decoder_input : {dummy_dec.shape}")
-    print(f"Выход TFT     : {out.shape}  (ожидается [4, 192, {len(MODEL_TARGET_COLUMNS)}])")
+    print(f"TFT output    : {out.shape}  (expected [4, 192, {len(MODEL_TARGET_COLUMNS)}])")
 
-    assert out.shape == (4, 192, len(MODEL_TARGET_COLUMNS)), f"Ошибка размерности: {out.shape}"
-    print("✓ Проверка размерностей TFT успешна!")
+    assert out.shape == (4, 192, len(MODEL_TARGET_COLUMNS)), f"Dimension mismatch: {out.shape}"
+    print("✓ TFT dimension check passed successfully!")
 
-    # Проверка маскированного лосса
+    # Masked loss verification
     targets = out.clone().detach()
     targets[0, 10:20, :] = float("nan")
     loss = masked_mse_loss(out, targets)
-    print(f"Маскированный MSE лосс: {loss.item():.6f}")
+    print(f"Masked MSE loss: {loss.item():.6f}")
     assert not torch.isnan(loss)
-    print("✓ Masked MSE лосс работает корректно!")
+    print("✓ Masked MSE loss verified successfully!")
 
-    # Проверка весов внимания
+    # Attention weights verification
     attn_w = model.last_attn_weights
-    print(f"Размерность весов Attention: {attn_w.shape}  (ожидается [4, 288, 288])")
-    print("✓ Все проверки пройдены успешно!")
+    print(f"Attention weights shape: {attn_w.shape}  (expected [4, 288, 288])")
+    print("✓ All architecture tests passed successfully!")

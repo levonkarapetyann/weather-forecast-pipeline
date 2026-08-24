@@ -1,14 +1,18 @@
 """
 =============================================================================
-МОДУЛЬ: Project Paths & Configuration Resolver (project_paths.py)
+MODULE: Project Paths & Configuration Resolver (project_paths.py)
 -----------------------------------------------------------------------------
-НАЗНАЧЕНИЕ:
-Вспомогательный модуль для резолвинга абсолютных путей к файлам конфигурации,
-моделям и датасетам независимо от текущей рабочей директории вызова (OS / WSL / macOS).
+PURPOSE:
+Utility module for resolving absolute paths to configuration files, models,
+and datasets regardless of the current working directory (OS / WSL / macOS).
 
-ОСНОВНЫЕ ФУНКЦИИ:
-1. `resolve_path(*paths)`: резолвинг абсолютного пути относительно корня проекта.
-2. `load_settings()`: безопасное чтение центрального `config/settings.json`.
+KEY FUNCTIONS:
+1. 
+esolve_path(*paths): Resolves absolute paths relative to the project root.
+2. load_settings(): Safely reads the central config/settings.json.
+3. load_json(): Safely parses JSON files with fallback defaults.
+4. load_stations_config(): Loads stations list from config/stations.json.
+5. load_scalers_config(): Loads scaling parameters from config/scalers.json.
 =============================================================================
 """
 
@@ -21,12 +25,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def resolve_path(*parts: Union[str, os.PathLike]) -> str:
-    """Возвращает абсолютный путь относительно корня репозитория."""
+    """Returns an absolute filesystem path relative to the repository root."""
     return str(REPO_ROOT.joinpath(*map(str, parts)))
 
 
 def load_settings(settings_path: str | None = None) -> Dict[str, Any]:
-    """Загружает settings.json из корня проекта или из пользовательского пути."""
+    """Loads settings.json from the project root or a user-specified path."""
     if settings_path is None:
         settings_path = resolve_path("config", "settings.json")
 
@@ -35,7 +39,7 @@ def load_settings(settings_path: str | None = None) -> Dict[str, Any]:
 
 
 def load_json(path: str | None, default: Any = None) -> Any:
-    """Безопасно загружает JSON-файл. Возвращает default при отсутствии файла."""
+    """Safely loads a JSON file. Returns default if the file does not exist."""
     if path is None:
         return default
 
@@ -48,7 +52,7 @@ def load_json(path: str | None, default: Any = None) -> Any:
 
 
 def load_stations_config(stations_path: str | None = None) -> List[Dict[str, Any]]:
-    """Загружает список станций из config/stations.json."""
+    """Loads the list of meteorological stations from config/stations.json."""
     if stations_path is None:
         stations_path = resolve_path("config", "stations.json")
     data = load_json(stations_path, default={"stations": []})
@@ -56,7 +60,7 @@ def load_stations_config(stations_path: str | None = None) -> List[Dict[str, Any
 
 
 def load_scalers_config(scalers_path: str | None = None) -> Dict[str, Any]:
-    """Загружает параметры масштабирования из config/scalers.json."""
+    """Loads scaling parameters from config/scalers.json."""
     if scalers_path is None:
         try:
             settings = load_settings()

@@ -1,26 +1,29 @@
+# Core Backend & API Framework
 fastapi
 uvicorn[standard]
 pydantic
 requests
 python-dotenv
 
-# Анализ данных и вычисления
+# Data Processing, Numerical Computing & Serialization
 numpy
 pandas
 scipy
 pyarrow
+joblib
+psutil
 
-# Машинное обучение и ML-утилиты
+# Machine Learning, Deep Learning & Modeling
 torch
 catboost
 scikit-learn
 
-# Веб/Дашборд/Визуализация
+# Frontend Dashboard, Visualization & Geospatial Mapping
 streamlit
 streamlit-folium
 folium
 plotly
 
-# Дополнительно (по необходимости)
-# - Установите конкретные версии при развёртывании в продакшн
-# - Если используете GPU, установите подходящую сборку `torch` с поддержкой CUDA
+# External Integrations & Cloud Storage (Google Sheets API)
+gspread
+google-auth

@@ -1,16 +1,16 @@
 """
 =============================================================================
-МОДУЛЬ: Rain Classification & Physics Filter (rain_engine.py)
+MODULE: Rain Classification & Physics Filter (rain_engine.py)
 -----------------------------------------------------------------------------
-НАЗНАЧЕНИЕ:
-Автономный модуль прогнозирования осадков и вероятностей дождя.
+PURPOSE:
+Dedicated precipitation classification and rain probability forecasting engine.
 
-ОСНОВНЫЕ ФУНКЦИИ И АЛГОРИТМЫ:
-1. Автономный классификатор осадков на базе CatBoost с изотонической калибровкой.
-2. Физический фильтр (Physics Guardrail): плавное затухание вероятности дождя
-   при недостаточно высокой относительной влажности (<75%) или высоком дефиците
-   точки росы (>2.5°C).
-3. Формирование специализированного набора признаков осадков и пайплайн обучения.
+KEY FUNCTIONS & ALGORITHMS:
+1. Standalone CatBoost precipitation classifier with isotonic probability calibration.
+2. Physics Guardrails: smooth probability attenuation based on relative humidity
+   thresholds (<75%) and dew point deficit constraints (>2.5°C).
+   and dew point deficit constraints (>2.5°C).
+3. Precipitation feature engineering pipeline and training orchestration.
 =============================================================================
 """
 
@@ -32,7 +32,7 @@ from data_pipeline import (
 )
 
 # =====================================================================
-# 1. ГЛАДКАЯ ФИЗИЧЕСКАЯ КОРРЕКЦИЯ (Physics Guardrails)
+# 1. SMOOTH PHYSICAL CORRECTION (Physics Guardrails)
 # =====================================================================
 
 def compute_smooth_physics_adjustment(
@@ -43,47 +43,47 @@ def compute_smooth_physics_adjustment(
     cloud_cover: np.ndarray = None,
 ) -> np.ndarray:
     """
-    Гладкая физическая адаптация вероятности осадков.
-    Плавное затухание вероятности осадков P(rain) -> P'(rain) при высоком дефиците точки росы
-    и низкой относительной влажности без применения сухих "жестких" отсечек.
+    Smooth physical adaptation of precipitation probability.
+    Smooth attenuation of rain probability P(rain) -> P'(rain) under high dew point deficit
+    and low relative humidity without hard threshold cutoffs.
     """
     p_rain = np.nan_to_num(np.asarray(p_rain, dtype=np.float32), nan=0.0)
     temp = np.nan_to_num(np.asarray(temp, dtype=np.float32), nan=20.0)
     dew_point = np.nan_to_num(np.asarray(dew_point, dtype=np.float32), nan=10.0)
     humidity = np.nan_to_num(np.asarray(humidity, dtype=np.float32), nan=50.0)
 
-    # 1. Дефицит точки росы (T - Td)
+    # 1. Dew Point Deficit (T - Td)
     deficit = np.maximum(0.0, temp - dew_point)
 
-    # 2. Множитель дефицита точки росы (Sigmoid Decay)
+    # 2. Dew point deficit multiplier (Sigmoid Decay)
     deficit_factor = 1.0 / (1.0 + np.exp(0.75 * (deficit - 4.5)))
 
-    # 3. Множитель относительной влажности (Humidity Factor)
+    # 3. Relative humidity multiplier (Humidity Factor)
     rh_norm = np.clip(humidity, 0.0, 100.0)
     humidity_factor = 1.0 / (1.0 + np.exp(-0.15 * (rh_norm - 55.0)))
 
-    # Совокупный физический понижающий коэффициент [0.05, 1.0]
+    # Cumulative physical attenuation factor [0.05, 1.0]
     physics_multiplier = np.clip(deficit_factor * humidity_factor, 0.05, 1.0)
 
-    # Опциональный учет облачности, если она доступна
+    # Optional cloud cover factor if available
     if cloud_cover is not None:
         cc_norm = np.clip(np.nan_to_num(np.asarray(cloud_cover, dtype=np.float32), nan=50.0), 0.0, 100.0)
         cloud_factor = 0.3 + 0.7 * (cc_norm / 100.0)
         physics_multiplier *= cloud_factor
 
-    # Гладкая корректировка P'(rain)
+    # Smooth adjustment P'(rain)
     adjusted_p_rain = p_rain * physics_multiplier
     return np.nan_to_num(np.clip(adjusted_p_rain, 0.0, 1.0), nan=0.0).astype(np.float32)
 
 
 # =====================================================================
-# 2. КЛАССИФИКАТОР ОСАДКОВ CATBOOST
+# 2. CATBOOST PRECIPITATION CLASSIFIER
 # =====================================================================
 
 class RainCatBoostClassifier:
     """
-    Автономный классификатор осадков на базе CatBoost.
-    Обучается абсолютно независимо от основной нейронной сети TFT / модели температуры.
+    Standalone precipitation classifier based on CatBoost.
+    Trained completely independently of primary TFT / temperature model.
     """
 
     def __init__(self, model_dir: str = "models"):
@@ -109,7 +109,7 @@ class RainCatBoostClassifier:
         n_pos = np.sum(y_train == 1)
         n_neg = np.sum(y_train == 0)
         scale_pos_weight = float(n_neg / max(n_pos, 1))
-        print(f"[RainCatBoost] Баланс классов: pos={n_pos}, neg={n_neg}, scale_pos_weight={scale_pos_weight:.2f}")
+        print(f"[RainCatBoost] Class balance: pos={n_pos}, neg={n_neg}, scale_pos_weight={scale_pos_weight:.2f}")
 
         self.model = CatBoostClassifier(
             iterations=iterations,
@@ -130,12 +130,12 @@ class RainCatBoostClassifier:
 
         val_probs_raw = self.model.predict_proba(X_val)[:, 1]
 
-        print("[RainCatBoost] Обучение изотонической калибровки вероятностей...")
+        print("[RainCatBoost] Training isotonic probability calibration...")
         self.calibrator = IsotonicRegression(out_of_bounds="clip")
         val_probs_calibrated = self.calibrator.fit_transform(val_probs_raw, y_val)
 
         if val_df_raw is not None and "temperature" in val_df_raw.columns and "dew_point" in val_df_raw.columns and "humidity" in val_df_raw.columns:
-            print("[RainCatBoost] Применение гладкой физической коррекции на валидации...")
+            print("[RainCatBoost] Applying smooth physics guardrail on validation...")
             temp = val_df_raw["temperature"].values
             dew_point = val_df_raw["dew_point"].values
             humidity = val_df_raw["humidity"].values
@@ -161,15 +161,15 @@ class RainCatBoostClassifier:
         valid_auc_mask = ~np.isnan(y_val) & ~np.isnan(val_probs_adjusted)
         if valid_auc_mask.any() and len(np.unique(y_val[valid_auc_mask])) > 1:
             auc_score = roc_auc_score(y_val[valid_auc_mask], val_probs_adjusted[valid_auc_mask])
-            print(f"[RainCatBoost] Оптимальный порог: {self.optimal_threshold:.3f} | Best F1: {best_f1:.4f} | ROC-AUC: {auc_score:.4f}")
+            print(f"[RainCatBoost] Optimal threshold: {self.optimal_threshold:.3f} | Best F1: {best_f1:.4f} | ROC-AUC: {auc_score:.4f}")
         else:
-            print(f"[RainCatBoost] Оптимальный порог: {self.optimal_threshold:.3f} | Best F1: {best_f1:.4f} | ROC-AUC: N/A")
+            print(f"[RainCatBoost] Optimal threshold: {self.optimal_threshold:.3f} | Best F1: {best_f1:.4f} | ROC-AUC: N/A")
 
         self.save()
 
     def predict_proba(self, X: pd.DataFrame, df_raw: pd.DataFrame = None) -> np.ndarray:
         if self.model is None:
-            raise ValueError("Модель CatBoost не обучена!")
+            raise ValueError("CatBoost model is not trained!")
 
         raw_probs = self.model.predict_proba(X[self.feature_names])[:, 1]
         calibrated_probs = self.calibrator.transform(raw_probs) if self.calibrator else raw_probs
@@ -198,7 +198,7 @@ class RainCatBoostClassifier:
             "optimal_threshold": self.optimal_threshold,
             "feature_names": self.feature_names,
         }, meta_path)
-        print(f"[RainCatBoost] Модель и метаданные сохранены в {self.model_dir}")
+        print(f"[RainCatBoost] Model and metadata saved to {self.model_dir}")
 
     def load(self):
         cb_path = os.path.join(self.model_dir, "rain_catboost.cbm")
@@ -210,17 +210,17 @@ class RainCatBoostClassifier:
             self.calibrator = meta["calibrator"]
             self.optimal_threshold = meta["optimal_threshold"]
             self.feature_names = meta["feature_names"]
-            print(f"[RainCatBoost] Модель успешно загружена (порог={self.optimal_threshold:.3f})")
+            print(f"[RainCatBoost] Model loaded successfully (threshold={self.optimal_threshold:.3f})")
         else:
-            raise FileNotFoundError(f"Файлы модели {cb_path} или {meta_path} не найдены!")
+            raise FileNotFoundError(f"Model files {cb_path} or {meta_path} not found!")
 
 
 # =====================================================================
-# 3. ПОДГОТОВКА ФИЧЕЙ И ЦИКЛ ОБУЧЕНИЯ (Pipeline Helpers)
+# 3. FEATURE ENGINEERING & TRAINING PIPELINE (Pipeline Helpers)
 # =====================================================================
 
 def prepare_rain_features(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Генерирует специализированный набор фичей для классификатора осадков."""
+    """Builds specialized feature set for precipitation classification."""
     df_feat = df.copy()
 
     if "dew_point" not in df_feat.columns and "temperature" in df_feat.columns and "humidity" in df_feat.columns:
@@ -250,14 +250,14 @@ def prepare_rain_features(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]
 
 
 def run_training_pipeline():
-    print("--- [Rain Pipeline] Запуск обучения автономного классификатора осадков ---")
+    print("--- [Rain Pipeline] Starting standalone precipitation classifier training ---")
 
     processed_dir = resolve_path("data", "processed")
     dfs = []
 
     for candidate in [os.path.join("weather_data", "processed_dataset.csv"), os.path.join("data", "processed_dataset.csv")]:
         if os.path.exists(candidate):
-            print(f"[Rain Pipeline] Загрузка объединенного датасета из {candidate}...")
+            print(f"[Rain Pipeline] Loading concatenated dataset from {candidate}...")
             dfs.append(pd.read_csv(candidate))
             break
 
@@ -267,21 +267,21 @@ def run_training_pipeline():
             if f.startswith("station_") and f.endswith("_features.parquet")
         ]
         if parquet_files:
-            print(f"[Rain Pipeline] Найдено {len(parquet_files)} parquet файлов станций в {processed_dir}. Объединяем данные...")
+            print(f"[Rain Pipeline] Found {len(parquet_files)} parquet station feature files in {processed_dir}. Concatenating data...")
             for pf in parquet_files:
                 try:
                     df_st = pd.read_parquet(pf)
                     dfs.append(df_st)
                 except Exception as e:
-                    print(f" Ошибка чтения {pf}: {e}")
+                    print(f" Error reading {pf}: {e}")
 
     if not dfs:
-        print("[Rain Pipeline] Ошибка: Не найдено подходящих данных (CSV или Parquet) в data/processed!")
+        print("[Rain Pipeline] Error: No suitable data (CSV or Parquet) found in data/processed!")
         return
 
     df = pd.concat(dfs, ignore_index=True)
     if "rain" not in df.columns:
-        print("[Rain Pipeline] Ошибка: колонка 'rain' не найдена в датасете!")
+        print("[Rain Pipeline] Error: 'rain' column not found in dataset!")
         return
 
     df["rain_binary"] = (pd.to_numeric(df["rain"], errors="coerce").fillna(0.0) > 0.05).astype(int)
@@ -294,7 +294,7 @@ def run_training_pipeline():
     y_train, y_val = y[:split_idx], y[split_idx:]
     val_df_raw = df_raw.iloc[split_idx:]
 
-    print(f"[Rain Pipeline] Train размера: {X_train.shape}, Val размера: {X_val.shape}")
+    print(f"[Rain Pipeline] Train shape: {X_train.shape}, Val shape: {X_val.shape}")
 
     classifier = RainCatBoostClassifier()
     classifier.train(
@@ -304,7 +304,7 @@ def run_training_pipeline():
         y_val=y_val,
         val_df_raw=val_df_raw,
     )
-    print("--- [Rain Pipeline] Обучение классификатора осадков успешно завершено! ---")
+    print("--- [Rain Pipeline] Precipitation classifier training completed successfully! ---")
 
 
 if __name__ == "__main__":

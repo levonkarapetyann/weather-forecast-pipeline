@@ -1,16 +1,16 @@
 """
 =============================================================================
-МОДУЛЬ: PID Controller Optimization & Tuning (pid_tuner.py)
+MODULE: PID Controller Optimization & Tuning (pid_tuner.py)
 -----------------------------------------------------------------------------
-НАЗНАЧЕНИЕ:
-Скрипт подбора и оптимизации коэффициентов PID-регулятора (Kp, Ki, Kd, alpha)
-для каждой отдельной метеостанции.
+PURPOSE:
+Script for tuning and optimizing PID controller coefficients (Kp, Ki, Kd, alpha)
+for each individual weather station.
 
-ОСНОВНЫЕ ФУНКЦИИ:
-1. Симуляция работы PID-регулятора на валидационных окнах исторических данных.
-2. Поиск оптимальных значений коэффициентов обратной связи с помощью Nelder-Mead
-   / Powell оптимизации для минимизации ошибки MAE прогнозов на первые 10 часов.
-3. Сохранение откалиброванных параметров в `config/pid_params.json`.
+KEY FUNCTIONS:
+1. Simulation of PID controller on historical validation windows.
+2. Finding optimal feedback coefficients via Nelder-Mead / Powell optimization
+   to minimize MAE over the first 10 forecast hours.
+3. Saving calibrated parameters to `config/pid_params.json`.
 =============================================================================
 """
 
@@ -35,7 +35,7 @@ FIXED_STATION_ALPHA = {
     "Mkhchyan": 0.995,
 }
 
-# Штраф за скачки коррекции (не самого ряда): для rain/wind почти не давим.
+# Penalty for correction jumps (not the series itself).
 SMOOTH_WEIGHT_BY_VAR = {
     "temperature": 0.01,
     "pressure": 0.01,
@@ -59,14 +59,14 @@ MAX_CORRECTION_REAL = {
 }
 
 TERRAIN_DECAY_TAU = {
-    "alpine": 8.0,   # Быстрое затухание (8 часов) для высокогорий (>1800м)
-    "valley": 12.0,  # Умеренное затухание (12 часов) для горных котловин
-    "plain": 14.0,   # Плавное затухание (14 часов) для равнин и предгорий
+    "alpine": 8.0,   # Rapid decay (8 hours) for alpine terrain (>1800m)
+    "valley": 12.0,  # Moderate decay (12 hours) for valley basins
+    "plain": 14.0,   # Smooth decay (14 hours) for plains and foothills
 }
 
 
 def classify_station_terrain(station_meta: dict) -> str:
-    """Классифицирует метеостанцию по микроклиматическому рельефу."""
+    """Classifies weather station by microclimatic terrain relief."""
     elev = float(station_meta.get("elevation_m", 1000.0))
     cold_risk = float(station_meta.get("valley_cold_pool_risk", 0.0))
 
@@ -104,7 +104,7 @@ def pad_features_df(df, min_rows):
 
 
 def compute_int_limit(preds: torch.Tensor, targets: torch.Tensor) -> float:
-    """Порог интегратора по std остатков на train; ограничен [0.5, 10]."""
+    """Integrator threshold by residual std on train; clamped to [0.5, 10]."""
     resid = preds - targets
     mask = ~torch.isnan(resid)
     if not mask.any():
@@ -134,8 +134,8 @@ def apply_pid(
     pressure_trends: torch.Tensor = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    PID-цикл с плавным (sigmoid) переходом параметров вокруг split_step
-    (bumpless transfer). Ширина окна перехода — blend_window_steps шагов.
+    PID cycle with smooth (sigmoid) parameter blending around split_step
+    (bumpless transfer). Transition window width is blend_window_steps.
     """
     e_t0 = preds[:, 0] - targets[:, 0]
     e_t0 = torch.where(torch.isnan(e_t0), torch.zeros_like(e_t0), e_t0)
@@ -146,7 +146,7 @@ def apply_pid(
 
     blend_scale = max(1.0, blend_window_steps / 2.0)
 
-    # Weather Regime PID: адаптация Kp и Kd при прохождении погодного фронта dP/dt
+    # Weather Regime PID: adapt Kp and Kd during front passage dP/dt
     if pressure_trends is not None:
         is_front = torch.abs(pressure_trends) > 1.5
         Kp_short = torch.where(is_front, Kp_short * 1.40, Kp_short)
@@ -166,7 +166,7 @@ def apply_pid(
         integral_sum = torch.clamp(integral_sum * alpha + e_prev, -int_limit, int_limit)
         e_deriv = e_prev - e_prev2
         correction = Kp * e_prev + Ki * integral_sum + Kd * e_deriv
-        # Адаптивное экспоненциальное затухание коррекции по горизонту (Gain Decay):
+        # Adaptive exponential gain decay across forecast horizon:
         decay_factor = torch.exp(torch.tensor(-t / max(1.0, decay_tau_hours), dtype=torch.float32))
         correction = correction * decay_factor
         correction = torch.clamp(correction, -max_corr_z, max_corr_z)
@@ -190,9 +190,9 @@ def optimize_pid_parameters(
     blend_window_steps: int = 4,
 ) -> tuple[float, float, float, float, float, float, float, float, float, bool]:
     """
-    Двухэтапная последовательная оптимизация параметров PID:
-    - Этап 1: Оптимизирует Kp_short, Ki_short, Kd_short, alpha_short по MSE короткого горизонта (t < split_step).
-    - Этап 2: Фиксирует короткие параметры, оптимизирует Kp_long, Ki_long, Kd_long, alpha_long по MSE длинного горизонта (t >= split_step).
+    Two-stage sequential optimization of PID parameters:
+    - Stage 1: Optimize Kp_short, Ki_short, Kd_short, alpha_short on near horizon (t < split_step).
+    - Stage 2: Freeze near parameters, optimize Kp_long, Ki_long, Kd_long, alpha_long on far horizon (t >= split_step).
     """
     n = int(preds.shape[0])
     if n == 0:
@@ -209,7 +209,7 @@ def optimize_pid_parameters(
 
     int_limit = compute_int_limit(train_preds, train_targs)
 
-    # --- Этап 1: Оптимизация короткого горизонта ---
+    # --- Stage 1: Near Horizon Optimization ---
     Kp_short = torch.tensor(0.1, requires_grad=True)
     Ki_short = torch.tensor(0.01, requires_grad=True)
     Kd_short = torch.tensor(0.05, requires_grad=True)
@@ -290,7 +290,7 @@ def optimize_pid_parameters(
         Kd_short_val = Kd_short.detach().clone()
         alpha_short_val = alpha_short_t.detach().clone()
 
-    # --- Этап 2: Оптимизация длинного горизонта ---
+    # --- Stage 2: Far Horizon Optimization ---
     Kp_long = torch.tensor(float(Kp_short_val.item()), requires_grad=True)
     Ki_long = torch.tensor(float(Ki_short_val.item()), requires_grad=True)
     Kd_long = torch.tensor(float(Kd_short_val.item()), requires_grad=True)
@@ -326,7 +326,7 @@ def optimize_pid_parameters(
             Kp_long.clamp_(0.0, 1.0)
             Ki_long.clamp_(0.0, 0.8)
             Kd_long.clamp_(0.0, 1.0)
-            # alpha_long зажата в [0.99, 0.9995] для более медленного затухания
+            # alpha_long constrained to [0.99, 0.9995] for slower decay
             alpha_long_t.clamp_(0.99, 0.9995)
 
             if has_val:
@@ -380,10 +380,10 @@ def optimize_pid_parameters(
 
 
 def main():
-    device = torch.device("cpu")  # Используем CPU для тюнинга
+    device = torch.device("cpu")  # Use CPU for tuning
     settings_path = resolve_path("config", "settings.json")
     if not os.path.exists(settings_path):
-        print(f"Ошибка: Файл настроек {settings_path} не найден.")
+        print(f"Error: Settings file {settings_path} not found.")
         return
 
     with open(settings_path, "r", encoding="utf-8") as f:
@@ -395,13 +395,13 @@ def main():
     )
     scalers_path = resolve_path(settings["paths"]["scalers_file"])
     if not os.path.exists(scalers_path):
-        print(f"Ошибка: Файл скейлеров {scalers_path} не найден.")
+        print(f"Error: Scalers file {scalers_path} not found.")
         return
 
     with open(scalers_path, "r", encoding="utf-8") as f:
         scalers = json.load(f)
 
-    # Инициализируем TFTForecaster с параметрами из settings.json
+    # Initialize TFTForecaster with parameters from settings.json
     tft_cfg = settings.get("tft", {})
     model = TFTForecaster(
         hidden_size=tft_cfg.get("hidden_size", 128),
@@ -415,10 +415,10 @@ def main():
         settings["paths"].get("model_filename", "tft_model.pth"),
     )
     if not os.path.exists(model_path):
-        print(f"Ошибка: Файл весов модели {model_path} не найден.")
+        print(f"Error: Model weights file {model_path} not found.")
         return
 
-    # Загружаем веса строго (strict=True), чтобы избежать нестыковок в архитектуре
+    # Load weights strictly (strict=True) to avoid architectural mismatches
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
 
@@ -427,13 +427,13 @@ def main():
     if os.path.exists(out_path):
         try:
             os.remove(out_path)
-            print(f"🧹 Удален устаревший файл конфигурации PID: {out_path}")
+            print(f"🧹 Removed stale PID configuration file: {out_path}")
         except Exception as e:
-            print(f"⚠️  Не удалось удалить старый {out_path}: {e}")
+            print(f"⚠️  Failed to remove stale {out_path}: {e}")
 
     var_names = ["temperature", "pressure", "humidity", "rain", "wind_u", "wind_v"]
 
-    print("--- Запуск оптимизации параметров PID-регулятора ---")
+    print("--- Starting PID Controller Parameter Optimization ---")
 
     for station in stations:
         sid, name = station["id"], station["name"]
@@ -443,9 +443,9 @@ def main():
         if not os.path.exists(parquet_path) or not os.path.exists(forecast_path):
             continue
 
-        print(f"Обработка станции {name} (id={sid})...")
+        print(f"Processing station {name} (id={sid})...")
         if f"station_{sid}" not in scalers:
-            print(f"  Станция {name} ({sid}): скейлеры не найдены, пропускаем.")
+            print(f"  Station {name} ({sid}): scalers not found, skipping.")
             continue
 
         df_features = pd.read_parquet(parquet_path)
@@ -460,17 +460,17 @@ def main():
         # --- pad if not enough rows ---
         min_rows = settings["model"]["lookback_steps"] + settings["model"]["horizon_steps"]
         if len(df_features) < min_rows:
-            print(f"  Станция {name} ({sid}): только {len(df_features)} строк < {min_rows}, дополняем...")
+            print(f"  Station {name} ({sid}): only {len(df_features)} rows < {min_rows}, padding...")
             df_features = pad_features_df(df_features, min_rows)
-            print(f"  После дополнения: {len(df_features)} строк.")
+            print(f"  After padding: {len(df_features)} rows.")
 
         df_f = apply_scalers(df_features, scalers[f"station_{sid}"], NORMALIZE_COLUMNS)
         dataset = ClimateDataset(df_f, df_forecast)
         if len(dataset) == 0:
-            print(f"  Станция {name} ({sid}): датасет пуст даже после дополнения, пропускаем.")
+            print(f"  Station {name} ({sid}): dataset empty even after padding, skipping.")
             continue
 
-        # Ограничиваем выборку последними 800 окнами для предотвращения OOM в WSL
+        # Limit sample to last 800 windows to prevent OOM in WSL
         if len(dataset) > 800:
             dataset = Subset(dataset, range(len(dataset) - 800, len(dataset)))
 
@@ -487,10 +487,10 @@ def main():
         split_step = int(near_horizon_hours * 4.0)
         blend_window_steps = int(settings.get("residual_boost", {}).get("blend_window_steps", 4))
 
-        # Классификация рельефа станции для подбора адаптивного затухания tau
+        # Station terrain classification for adaptive decay tau
         terrain_class = classify_station_terrain(station)
         decay_tau_hours = TERRAIN_DECAY_TAU.get(terrain_class, 12.0)
-        print(f"  [Рельеф Станции: {terrain_class.upper()}] Высота: {station.get('elevation_m', 0)}м | PID Decay Tau: {decay_tau_hours}ч")
+        print(f"  [Station Terrain: {terrain_class.upper()}] Elevation: {station.get('elevation_m', 0)}m | PID Decay Tau: {decay_tau_hours}h")
 
         station_pid = {}
         for var_name in var_names:
@@ -531,7 +531,7 @@ def main():
                 "terrain_class": terrain_class,
             }
 
-            # ── Верификация качества настройки: MAE на Val (или Train, если Val нет) ──
+            # ── Tuning verification: MAE on Val (or Train if Val unavailable) ──
             split = max(1, int(var_preds.shape[0] * 0.7)) if has_val else var_preds.shape[0]
             eval_preds = var_preds[split:] if has_val else var_preds
             eval_targs = var_targets[split:] if has_val else var_targets
@@ -560,16 +560,16 @@ def main():
 
         pid_params[f"station_{sid}"] = station_pid
 
-        # Сохраняем промежуточные результаты
+        # Save intermediate results
         out_path = resolve_path("config", "pid_params.json")
         try:
             with open(out_path, "w", encoding="utf-8") as f:
                 json.dump(pid_params, f, indent=2)
-            print(f"  Параметры PID для станции {sid} сохранены.")
+            print(f"  PID parameters for station {sid} saved.")
         except Exception as e:
-            print(f"  Не удалось сохранить PID параметры для станции {sid}: {e}")
+            print(f"  Failed to save PID parameters for station {sid}: {e}")
 
-    print(f"\nОптимизация PID завершена. Итоговый файл: {out_path}")
+    print(f"\nPID optimization complete. Output file: {out_path}")
 
 
 if __name__ == "__main__":

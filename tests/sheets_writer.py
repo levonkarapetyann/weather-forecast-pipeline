@@ -2,15 +2,15 @@
 """
 sheets_writer.py
 ================
-Модуль записи прогнозов и реальных данных в Google Sheets.
+Google Sheets synchronization module for weather forecasts and sensor observations.
 
-Записывает каждый прогноз и реальные показания станции в её персональный лист,
-названный точно так же, как метеостанция (например, Station_1).
+Writes forecasts and ground truth observations into per-station dedicated sheets,
+named after the meteorological station (e.g. Station_1).
 
-Структура листа станции:
-  - Столбцы A-F (Прогноз): run_timestamp, station_id, station_name, forecast_datetime, temperature, will_rain
-  - Столбец G (Разделитель): Пустой
-  - Столбцы H-K (Реальные показания): timestamp, station_name, temperature_actual, rain_actual
+Sheet column schema:
+  - Columns A-F (Forecast): run_timestamp, station_id, station_name, forecast_datetime, temperature, will_rain
+  - Column G (Separator): Empty
+  - Columns H-K (Actuals): timestamp, station_name, temperature_actual, rain_actual
 """
 
 import json
@@ -45,7 +45,7 @@ ACTUALS_HEADERS = ["timestamp", "station_name", "temperature_actual", "rain_actu
 
 class SheetsWriter:
     """
-    Клиент для записи строк в персональные листы метеостанций в Google Sheets.
+    Client for appending observation rows to Google Sheets workbooks.
     """
 
     def __init__(
@@ -57,7 +57,7 @@ class SheetsWriter:
     ):
         if not _GSPREAD_AVAILABLE:
             raise RuntimeError(
-                "gspread не установлен. Выполните: pip install gspread>=6.0.0"
+                "gspread is not installed. Run: pip install gspread>=6.0.0"
             )
 
         creds = Credentials.from_service_account_file(credentials_file, scopes=_SCOPES)
@@ -65,10 +65,10 @@ class SheetsWriter:
         self.spreadsheet = self._gc.open_by_key(forecasts_spreadsheet_id)
         self._worksheets_cache = {}
 
-        print(f"✅ Google Sheets подключена: {self.spreadsheet.title}")
+        print(f"✅ Google Sheets connected: {self.spreadsheet.title}")
 
     def _get_or_create_station_sheet(self, station_name: str):
-        """Возвращает или создает персональный лист для станции station_name."""
+        """Returns or creates a dedicated worksheet for station_name."""
         clean_name = str(station_name).strip()
         if clean_name in self._worksheets_cache:
             return self._worksheets_cache[clean_name]
@@ -76,30 +76,30 @@ class SheetsWriter:
         try:
             ws = self.spreadsheet.worksheet(clean_name)
         except Exception:
-            # Создаем компактный лист на 100 строк и 15 колонок
+            # Create worksheet with initial 100 rows and 15 columns
             ws = self.spreadsheet.add_worksheet(title=clean_name, rows=100, cols=15)
-            print(f"  ✏️  Создан новый персональный лист станции '{clean_name}'")
+            print(f"  ✏️  Created new worksheet for station '{clean_name}'")
 
         self._ensure_station_headers(ws)
         self._worksheets_cache[clean_name] = ws
         return ws
 
     def _ensure_station_headers(self, ws):
-        """Проверяет и записывает параллельные заголовки прогноза (A1:F1) и реальных данных (K1:N1)."""
+        """Verifies and writes headers for forecasts (A1:F1) and ground truth actuals (K1:N1)."""
         try:
             first_row = ws.row_values(1)
             if not first_row or len(first_row) < 6:
-                # Записываем заголовки прогноза в A1:F1
+                # Write forecast headers into A1:F1
                 ws.update("A1:F1", [FORECAST_HEADERS], value_input_option="USER_ENTERED")
-                # Записываем заголовки реальных показаний в K1:N1
+                # Write actual observation headers into K1:N1
                 ws.update("K1:N1", [ACTUALS_HEADERS], value_input_option="USER_ENTERED")
-                print(f"  ✏️  Двойные заголовки (Прогноз A-F | Факты K-N) инициализированы в '{ws.title}'")
+                print(f"  ✏️  Dual headers (Forecast A-F | Actuals K-N) initialized in '{ws.title}'")
         except Exception as exc:
-            print(f"  ⚠️ Ошибка инициализации заголовков в '{ws.title}': {exc}")
+            print(f"  ⚠️ Error initializing headers in '{ws.title}': {exc}")
 
 
     def append_station_forecasts(self, forecast_data: Any, run_ts: str) -> int:
-        """Дописывает прогноз станции в столбцы A:F её персонального листа."""
+        """Appends station forecast into columns A:F of its dedicated worksheet."""
         if forecast_data is None:
             return 0
 
@@ -154,7 +154,7 @@ class SheetsWriter:
                 will_rain_str,
             ])
 
-        # Вставляем новые строки прогноза сверху (сразу под заголовками A1:F1)
+        # Insert new forecast rows at top (immediately under headers A1:F1)
         empty_row = ["", "", "", "", "", ""]
         rows_to_insert = rows + [empty_row, empty_row, empty_row]
 
@@ -163,7 +163,7 @@ class SheetsWriter:
             try:
                 ws = self._get_or_create_station_sheet(station_name)
                 ws.insert_rows(rows_to_insert, row=2, value_input_option="USER_ENTERED")
-                print(f"  📊 Sheets [{station_name}] Прогноз: +{len(rows)} строк (вставлено сверху со строки A2)")
+                print(f"  📊 Sheets [{station_name}] Forecast: +{len(rows)} rows (inserted from row A2)")
                 return len(rows)
             except Exception as exc:
                 if "exceeds grid limits" in str(exc).lower() or "range" in str(exc).lower():
@@ -172,16 +172,16 @@ class SheetsWriter:
                     except Exception:
                         pass
                 if "429" in str(exc) or "Quota exceeded" in str(exc):
-                    print(f"  ⏳ [Google API Quota Limit 429] Ожидание 5 сек перед повтором ({attempt+1}/3)...")
+                    print(f"  ⏳ [Google API Quota Limit 429] Waiting 5s before retry ({attempt+1}/3)...")
                     time.sleep(5)
                 else:
-                    print(f"  ⚠️  Ошибка записи прогноза для '{station_name}': {exc}")
+                    print(f"  ⚠️  Forecast write error for '{station_name}': {exc}")
                     return 0
         return 0
 
 
     def append_station_actuals(self, station_name: str, actuals_list: list) -> int:
-        """Дописывает фактические данные станции в столбцы K:N её персонального листа (снизу под ранее записанными)."""
+        """Appends station actual observations into columns K:N of its dedicated worksheet."""
         if not actuals_list:
             return 0
 
@@ -200,7 +200,7 @@ class SheetsWriter:
                 str(round(float(rain), 4)) if rain is not None else "0.0",
             ])
 
-        # Вставляем реальные данные сверху в столбцы K:N под заголовками
+        # Insert actual data at top in columns K:N under headers
         empty_actual_row = ["", "", "", ""]
         rows_to_insert = rows + [empty_actual_row, empty_actual_row, empty_actual_row]
 
@@ -221,7 +221,7 @@ class SheetsWriter:
                     ws.update(f"K{2 + len(rows_to_insert)}:N{1 + existing_k_count + len(rows_to_insert)}", existing_data, value_input_option="USER_ENTERED")
 
                 ws.update(f"K2:N{target_end_row}", rows_to_insert, value_input_option="USER_ENTERED")
-                print(f"  📊 Sheets [{station_name}] Реальные замеры: +{len(rows)} строк (вставлено сверху со строки K2)")
+                print(f"  📊 Sheets [{station_name}] Actuals: +{len(rows)} rows (inserted from row K2)")
                 return len(rows)
             except Exception as exc:
                 if "exceeds grid limits" in str(exc).lower() or "range" in str(exc).lower():
@@ -230,17 +230,17 @@ class SheetsWriter:
                     except Exception:
                         pass
                 if "429" in str(exc) or "Quota exceeded" in str(exc):
-                    print(f"  ⏳ [Google API Quota Limit 429] Ожидание 5 сек перед повтором ({attempt+1}/3)...")
+                    print(f"  ⏳ [Google API Quota Limit 429] Waiting 5s before retry ({attempt+1}/3)...")
                     time.sleep(5)
                 else:
-                    print(f"  ⚠️  Ошибка записи фактов для '{station_name}': {exc}")
+                    print(f"  ⚠️  Actuals write error for '{station_name}': {exc}")
                     return 0
         return 0
 
 
 
 
-    # Обратная совместимость
+    # Backward compatibility
     def append_forecasts(self, forecast_data: Any, run_ts: str) -> int:
         return self.append_station_forecasts(forecast_data, run_ts)
 

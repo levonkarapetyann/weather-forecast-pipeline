@@ -1,13 +1,13 @@
 """
 =============================================================================
-МОДУЛЬ: Inversion Post-Processing Correction (inversion.py)
+MODULE: Inversion Post-Processing Correction (inversion.py)
 -----------------------------------------------------------------------------
-НАЗНАЧЕНИЕ:
-Векторизованная модель Ночной Инверсии на базе астрономического зенитного
-угла Солнца (Solar Zenith Angle Inversion) и тихой ветровой обстановки (Блок 7.3).
+PURPOSE:
+Vectorized Nocturnal Inversion model based on astronomical Solar Zenith Angle
+(SZA) and calm wind regime dynamics.
 
-Используется как в основном пайплайне прогнозирования (app.py), так и в
-инструментах независимой офлайн-оценки качества на тестовом сплите (evaluate.py).
+Used across the live forecasting pipeline (app.py) and independent offline
+evaluation benchmarks (evaluate.py).
 =============================================================================
 """
 
@@ -25,32 +25,34 @@ def apply_inversion_correction(
     cloud_cover: np.ndarray = None,
 ) -> np.ndarray:
     """
-    Применяет инверсионную поправку температуры на основе зенитного угла Солнца
-    и скорости ветра (Блок 7.3).
+    Applies nocturnal temperature inversion correction based on Solar Zenith Angle,
+    wind speed, and cloud cover attenuation.
 
     Parameters:
     -----------
     temp_raw : np.ndarray
-        Массив исходных денормализованных предсказаний температуры (°C).
-        Может быть 1D (horizon,) или 2D (N_windows, horizon).
+        Array of raw denormalized temperature predictions (?C).
+        Can be 1D (horizon,) or 2D (N_windows, horizon).
     wind_u : np.ndarray
-        Массив U-компоненты ветра (м/с), совпадает по форме с temp_raw.
+        Array of wind U-component (m/s), matching shape of temp_raw.
     wind_v : np.ndarray
-        Массив V-компоненты ветра (м/с), совпадает по форме с temp_raw.
+        Array of wind V-component (m/s), matching shape of temp_raw.
     timestamps : np.ndarray / list
-        Массив объектов datetime/Timestamp, совпадающий по форме с temp_raw.
+        Array of datetime/Timestamp objects matching shape of temp_raw.
     lat_deg : float
-        Широта станции в градусах (например, 40.2).
+        Station latitude in degrees (e.g., 40.2).
     scale : float
-        Коэффициент масштабирования поправки:
-        0.0 = выключено (без поправки),
-        0.5 = половинная поправка,
-        1.0 = стандартная поправка.
+        Correction scaling factor:
+        0.0 = disabled (no correction),
+        0.5 = half correction,
+        1.0 = standard correction.
+    cloud_cover : np.ndarray, optional
+        Fractional cloud cover [0.0, 1.0].
 
     Returns:
     --------
     np.ndarray
-        Скорректированный массив температуры той же формы.
+        Corrected temperature array of the same shape.
     """
     if scale == 0.0:
         return temp_raw.copy()
@@ -68,18 +70,18 @@ def apply_inversion_correction(
         doy = np.array([[pd.Timestamp(t).dayofyear for t in row] for row in ts_array])
         hour_frac = np.array([[pd.Timestamp(t).hour + pd.Timestamp(t).minute / 60.0 for t in row] for row in ts_array])
 
-    # Астрономическое склонение солнца и часовой угол
+    # Astronomical solar declination and hour angle
     declination = np.radians(23.45 * np.sin(np.radians(360.0 / 365.0 * (doy - 81))))
     hour_angle = np.radians(15.0 * (hour_frac - 12.0))
     cos_zenith = np.sin(lat_rad) * np.sin(declination) + np.cos(lat_rad) * np.cos(declination) * np.cos(hour_angle)
     zenith_deg = np.degrees(np.arccos(np.clip(cos_zenith, -1.0, 1.0)))
 
-    # Плавный фактор темноты (darkness_factor): 0.0 при дневном свете, 1.0 при абсолютной ночи
+    # Smooth darkness factor: 0.0 in daylight, 1.0 in full night
     darkness_factor = np.clip((zenith_deg - 87.0) / 9.0, 0.0, 1.0)
-    # Плавный фактор ветра (Sigmoid Wind Calm Factor)
+    # Smooth sigmoid wind calm factor
     wind_calm_factor = 1.0 / (1.0 + np.exp(4.0 * (w_speed - 1.8)))
 
-    # Учет облачности (Clear Sky Factor): облака отражают ИК-излучение земли, отменяя инверсию
+    # Cloud cover adjustment: clouds trap infrared radiation, attenuating nocturnal cooling
     if cloud_cover is not None:
         cc_arr = np.clip(np.asarray(cloud_cover, dtype=float), 0.0, 1.0)
         if len(cc_arr) > 0 and len(cc_arr) != len(temp_raw):
@@ -90,7 +92,7 @@ def apply_inversion_correction(
     else:
         clear_sky_factor = 1.0
 
-    # Величина инверсионного снижения температуры (смягченный клип 0.0...2.0°C + удержание при облаках)
+    # Inversion cooling magnitude (clipped to [0.0, 2.0] ?C)
     inversion_drop = np.clip((1.8 - w_speed) * 0.7, 0.0, 2.0) * darkness_factor * wind_calm_factor * clear_sky_factor
 
     active_mask = (darkness_factor > 0.0) & (wind_calm_factor > 0.01)
@@ -106,9 +108,9 @@ def apply_rolling_bias_correction(
     recent_forecast_temp: float | np.ndarray,
     decay_rate: float = 0.05
 ) -> np.ndarray:
-    """
-    Применяет адаптивную экспоненциальную коррекцию накопившегося смещения (Bias) за последние 24ч.
-    
+    r"""
+    Applies adaptive exponential decay correction for accumulated 24h bias:
+
     \hat{y}_{t+k} = y_{TFT, t+k} + Bias_{24h} * exp(-decay_rate * k)
     """
     if temp_preds is None or len(temp_preds) == 0:
@@ -128,7 +130,7 @@ def apply_rolling_bias_correction(
         except Exception:
             bias = 0.0
 
-    # Ограничиваем максимальную поправку до 4°C во избежание выбросов
+    # Bound maximum single bias step to 4?C to prevent runaway corrections
     bias = float(np.clip(bias, -4.0, 4.0))
 
     if out.ndim == 1:

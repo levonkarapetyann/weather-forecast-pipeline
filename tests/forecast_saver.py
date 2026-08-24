@@ -23,14 +23,14 @@ import argparse
 import os
 import sys
 
-# Импорт gspread клиента (sheets_writer)
+# Import gspread client (sheets_writer)
 try:
     from sheets_writer import SheetsWriter
     _SHEETS_WRITER_AVAILABLE = True
 except ImportError:
     _SHEETS_WRITER_AVAILABLE = False
 
-# Импорт CatBoost для независимого бинарного классификатора осадков
+# Import CatBoost for independent rain classifier
 try:
     from catboost import CatBoostClassifier
     _CATBOOST_AVAILABLE = True
@@ -44,7 +44,7 @@ except ImportError:
 
 
 def fetch_live_sensors_with_fallback(generated_id: int) -> Any:
-    """Запрашивает свежие показания датчиков с API ClimateNet или читает локальный JSON."""
+    """Queries fresh sensor readings from ClimateNet API or reads local JSON cache."""
     settings = load_settings()
     now = datetime.now()
     start_time = (now - timedelta(days=2)).strftime("%Y-%m-%d")
@@ -90,36 +90,36 @@ def fetch_live_sensors_with_fallback(generated_id: int) -> Any:
 """
 forecast_saver.py
 ===================
-Скрипт, который каждый час (или другой заданный интервал) собирает финальные
-гиперлокальные прогнозы со всех активных станций и дописывает их в
-итоговый CSV-файл с указанием времени запуска (run_timestamp).
+Automated script that periodically ingests final hyperlocal forecasts
+from all active stations and appends them to historical CSV/Sheets archives.
 
-Финальный прогноз — это тот же результат, который отображается в Streamlit:
-  TFT-модель → PID-коррекция.
 
-Скрипт работает в двух режимах (автоматически выбирает):
-  1. API режим  : опрашивает запущенный сервер FastAPI (http://127.0.0.1:8000).
-  2. Автономный : если сервер недоступен — загружает модель и считает прогноз
-                  напрямую внутри текущего процесса.
+Final forecast corresponds to production output:
+  TFT Model -> CatBoost Residuals -> PID Correction.
 
-Запуск:
-    python src/forecast_saver.py                # бесконечный цикл, раз в час
-    python src/forecast_saver.py --once         # один запуск (тест)
-    python src/forecast_saver.py --interval 30  # раз в 30 минут
+The script supports two execution modes (auto-selected):
+  1. API Mode    : queries running FastAPI server (http://127.0.0.1:8000).
+  2. Standalone  : loads models and computes forecasts in-process if server is down.
+                  
+
+Usage:
+    python tests/forecast_saver.py                # periodic hourly loop
+    python tests/forecast_saver.py --once         # single execution test
+    python tests/forecast_saver.py --interval 30  # every 30 minutes
 """
 
 
-# ── Пути ──────────────────────────────────────────────────────────────────────
-# Директория скрипта (src/) и корень проекта
+# ── Paths ──────────────────────────────────────────────────────────────────────
+# Script directory and project root
 
-# Добавляем src/ в sys.path чтобы импортировать внутренние модули
+# Add src/ to sys.path to import internal modules
 
-# ВАЖНО: переключаем рабочую директорию в корень проекта, чтобы все
-# относительные пути внутри app.py работали корректно
+# Set working directory to project root so all relative paths resolve
+# correctly across internal modules
 os.chdir(PROJECT_ROOT)
 
 
-# ── Схема колонок итогового CSV ───────────────────────────────────────────────
+# ── Output CSV Column Schema ───────────────────────────────────────────────────
 FIELDNAMES = [
     "run_timestamp",
     "station_id",
@@ -140,65 +140,65 @@ FIELDNAMES = [
     "pm10",
 ]
 
-# ── Кэш модели внутри процесса (чтобы не перезагружать её на каждой станции) ─
+# ── In-process Model Cache (prevents re-instantiation per station) ────────────
 _local_get_forecast = None
 
 
 def _ensure_local_model() -> bool:
-    """Импортирует get_forecast из app.py один раз и кэширует."""
+    """Imports get_forecast from app.py once and caches it."""
     global _local_get_forecast
     if _local_get_forecast is not None:
         return True
     try:
-        print("🔄 Загрузка TFT-модели в локальный процесс...")
+        print("🔄 Loading TFT model into local process...")
         from app import get_forecast as _gf  # noqa: PLC0415
         _local_get_forecast = _gf
-        print("✅ Модель загружена.")
+        print("✅ Model loaded.")
         return True
     except Exception as exc:
-        print(f"❌ Не удалось загрузить модель: {exc}")
+        print(f"❌ Failed to load model: {exc}")
         import traceback
         traceback.print_exc()
         return False
 
 
 def _pydantic_to_dict(obj) -> dict:
-    """Конвертирует Pydantic-объект (v1 или v2) в plain dict."""
+    """Converts Pydantic object (v1 or v2) to plain dict."""
     if isinstance(obj, dict):
         return obj
     if hasattr(obj, "model_dump"):          # pydantic v2
         return obj.model_dump()
     if hasattr(obj, "dict"):                # pydantic v1
         return obj.dict()
-    raise TypeError(f"Не могу конвертировать объект типа {type(obj)} в dict")
+    raise TypeError(f"Cannot convert object of type {type(obj)} to dict")
 
 
 def get_station_forecast(station_id: int, api_url: str) -> dict | None:
     """
-    Возвращает финальный прогноз для станции в виде dict.
+    Returns final forecast for station as dict.
 
-    Порядок попыток:
-      1. GET {api_url}/forecast/{station_id}   — если FastAPI запущен
-      2. Прямой вызов get_forecast() внутри процесса — fallback
+    Fallback order:
+      1. GET {api_url}/forecast/{station_id} - if FastAPI running
+      2. Direct in-process get_forecast() - fallback
     """
     # ── 1. API ─────────────────────────────────────────────────────────────────
     url = f"{api_url.rstrip('/')}/forecast/{station_id}"
     try:
-        print(f"📡 Запрос через API: {url}")
+        print(f"📡 Querying via API: {url}")
         resp = requests.get(url, timeout=15)
         if resp.status_code == 200:
             data = resp.json()
-            print(f"   ✅ API ответил ({len(data.get('forecast', []))} шагов)")
+            print(f"   ✅ API responded ({len(data.get('forecast', []))} steps)")
             return data
         else:
-            print(f"   ⚠️  API вернул {resp.status_code}: {resp.text[:120]}")
+            print(f"   ⚠️  API returned {resp.status_code}: {resp.text[:120]}")
     except requests.exceptions.ConnectionError:
-        print("   ℹ️  API недоступен — переход к локальному инференсу.")
+        print("   ℹ️  API unavailable - falling back to local inference.")
     except Exception as exc:
-        print(f"   ⚠️  Ошибка запроса API: {exc}")
+        print(f"   ⚠️  API request error: {exc}")
 
-    # ── 2. Локальный инференс ──────────────────────────────────────────────────
-    print(f"🔮 Локальный инференс для станции {station_id}...")
+    # ── 2. Local Inference ──────────────────────────────────────────────────────
+    print(f"🔮 Local inference for station {station_id}...")
     if not _ensure_local_model():
         return None
 
@@ -206,7 +206,7 @@ def get_station_forecast(station_id: int, api_url: str) -> dict | None:
         response_obj = _local_get_forecast(station_id)
         data = _pydantic_to_dict(response_obj)
 
-        # Конвертируем вложенные ForecastItem-объекты, если они ещё не dict
+        # Convert nested ForecastItem objects if not already dict
         if "forecast" in data:
             data["forecast"] = [
                 _pydantic_to_dict(item) if not isinstance(item, dict) else item
@@ -214,11 +214,11 @@ def get_station_forecast(station_id: int, api_url: str) -> dict | None:
             ]
 
         n = len(data.get("forecast", []))
-        print(f"   ✅ Локальный инференс завершён ({n} шагов)")
+        print(f"   ✅ Local inference completed ({n} steps)")
         return data
 
     except Exception as exc:
-        print(f"   ❌ Ошибка локального инференса: {exc}")
+        print(f"   ❌ Local inference error: {exc}")
         import traceback
         traceback.print_exc()
         return None
@@ -226,7 +226,7 @@ def get_station_forecast(station_id: int, api_url: str) -> dict | None:
 
 def save_forecast_to_csv(forecast_data: dict, csv_path: str, run_ts: str) -> int:
     """
-    Дописывает прогноз в CSV.  Возвращает количество записанных строк.
+    Appends forecast to CSV. Returns count of written rows.
     """
     if not forecast_data or "forecast" not in forecast_data:
         return 0
@@ -236,7 +236,7 @@ def save_forecast_to_csv(forecast_data: dict, csv_path: str, run_ts: str) -> int
 
     rows = []
     for item in forecast_data["forecast"]:
-        # item может быть plain dict (из API JSON или после model_dump)
+        # item can be plain dict (from API JSON or after model_dump)
         rows.append({
             "run_timestamp":        run_ts,
             "station_id":           station_id,
@@ -260,7 +260,7 @@ def save_forecast_to_csv(forecast_data: dict, csv_path: str, run_ts: str) -> int
     if not rows:
         return 0
 
-    # Создаём директорию при необходимости
+    # Create directory if needed
     dir_path = os.path.dirname(csv_path)
     if dir_path:
         os.makedirs(dir_path, exist_ok=True)
@@ -268,7 +268,7 @@ def save_forecast_to_csv(forecast_data: dict, csv_path: str, run_ts: str) -> int
     file_exists = os.path.exists(csv_path)
     size_before = os.path.getsize(csv_path) if file_exists else 0
     print(
-        f"  📂 CSV до записи: {'существует' if file_exists else 'не существует'}, размер: {size_before} байт, путь: {csv_path}")
+        f"  📂 CSV before write: {'exists' if file_exists else 'not found'}, size: {size_before} bytes, path: {csv_path}")
     with open(csv_path, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=FIELDNAMES, extrasaction="ignore")
         if not file_exists:
@@ -276,68 +276,68 @@ def save_forecast_to_csv(forecast_data: dict, csv_path: str, run_ts: str) -> int
         writer.writerows(rows)
 
     size_after = os.path.getsize(csv_path)
-    print(f"  💾 Записано {len(rows)} строк для '{station_name}' → {csv_path} (размер: {size_before} → {size_after} байт)")
+    print(f"  💾 Appended {len(rows)} rows for '{station_name}' -> {csv_path} (size: {size_before} -> {size_after} bytes)")
     return len(rows)
 
 
 def run_cycle(api_url: str, csv_path: str, settings: dict, sheets=None) -> None:
-    """Один полный цикл: генерация и сохранение прогнозов по всем активным станциям."""
+    """Single full cycle: generate and persist forecasts across all active stations."""
     now = datetime.now()
     run_ts = now.strftime("%Y-%m-%d %H:%M:%S")
 
     print(f"\n{'#' * 70}")
-    print(f"# ЦИКЛ ЗАПИСИ ПРОГНОЗОВ — {run_ts}")
+    print(f"# FORECAST PERSISTENCE CYCLE - {run_ts}")
     print(f"{'#' * 70}")
 
     stations_config_path = resolve_path(settings["paths"]["stations_config"])
     if not os.path.exists(stations_config_path):
-        print(f"❌ Файл конфигурации станций не найден: {stations_config_path}")
+        print(f"❌ Station configuration file not found: {stations_config_path}")
         return
 
     with open(stations_config_path, "r", encoding="utf-8") as f:
         stations_data = json.load(f)
 
     active_stations = select_stations_for_run(stations_data["stations"], settings)
-    print(f"Активных станций: {len(active_stations)}")
+    print(f"Active stations: {len(active_stations)}")
 
     total_rows = 0
     failed = 0
 
     for station in active_stations:
-        sid = station["id"]           # порядковый id (для запроса прогноза)
-        generated_id = station["generated_id"]  # реальный номер устройства/станции
+        sid = station["id"]           # sequential id (for querying forecast)
+        generated_id = station["generated_id"]  # actual device/station number
         sname = station["name"]
-        print(f"\n▶ Станция: {sname} (ID устройства: {generated_id})")
+        print(f"\n▶ Station: {sname} (Device ID: {generated_id})")
 
         forecast = get_station_forecast(sid, api_url)
         if forecast:
-            # Заменяем порядковый id на реальный номер станции (generated_id)
+            # Substitute sequential id with actual station generated_id
             forecast["station_id"] = generated_id
 
             total_rows += save_forecast_to_csv(forecast, csv_path, run_ts)
             if sheets is not None:
                 try:
                     sheets.append_station_forecasts(forecast, run_ts)
-                    time.sleep(1.2)  # Задержка 1.2с для соблюдения квоты Google API (макс 60 запросов/мин)
+                    time.sleep(1.2)  # 1.2s delay to comply with Google API quota (max 60 requests/min)
                 except Exception as exc:
-                    print(f"   ⚠️  Sheets.append_station_forecasts не удалось выполнить: {exc}")
+                    print(f"   ⚠️  Sheets.append_station_forecasts failed: {exc}")
 
 
         else:
-            print(f"   ❌ Прогноз не получен, станция пропущена.")
+            print(f"   ❌ Forecast not obtained, station skipped.")
             failed += 1
 
     elapsed = (datetime.now() - now).total_seconds()
     print(f"\n{'#' * 70}")
-    print(f"# ЦИКЛ ЗАВЕРШЁН — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"# Итого: записано {total_rows} строк, ошибок: {failed}, время: {elapsed:.1f}с")
+    print(f"# CYCLE COMPLETED - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"# Summary: appended {total_rows} rows, errors: {failed}, elapsed: {elapsed:.1f}s")
     print(f"{'#' * 70}\n")
 
 
 def run_actuals_cycle(sheets, settings: dict, hours_back: int = 2) -> None:
     """
-    Получает актуальные показания датчиков за последние hours_back часов
-    и отправляет весь пакет измерений в лист Actuals в Google Sheets.
+    Fetches fresh sensor observations over the last hours_back hours
+    and pushes measurement batch to Google Sheets.
     """
     if sheets is None:
         return
@@ -345,12 +345,12 @@ def run_actuals_cycle(sheets, settings: dict, hours_back: int = 2) -> None:
     now = datetime.now()
     cutoff_time = now - timedelta(hours=hours_back)
     print(f"\n{'=' * 70}")
-    print(f"# ЦИКЛ РЕАЛЬНЫХ ДАННЫХ DATCHIKOV (за последние {hours_back}ч) — {now.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"# LIVE SENSOR OBSERVATION CYCLE (last {hours_back}h) - {now.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'=' * 70}")
 
     stations_config_path = resolve_path(settings["paths"]["stations_config"])
     if not os.path.exists(stations_config_path):
-        print(f"❌ Файл конфигурации станций не найден: {stations_config_path}")
+        print(f"❌ Station configuration file not found: {stations_config_path}")
         return
 
     with open(stations_config_path, "r", encoding="utf-8") as f:
@@ -373,7 +373,7 @@ def run_actuals_cycle(sheets, settings: dict, hours_back: int = 2) -> None:
             df_recent = df_live[df_live["timestamp"] >= cutoff_time].sort_values("timestamp")
 
             if df_recent.empty:
-                # Если с момента cutoff_time ответа не было, берём 8 последних имеющихся записей (~2 часа)
+                # If no response since cutoff_time, take last 8 available records (~2 hours)
                 df_recent = df_live.sort_values("timestamp").tail(8)
 
             st_count = 0
@@ -397,34 +397,34 @@ def run_actuals_cycle(sheets, settings: dict, hours_back: int = 2) -> None:
                 st_count += 1
 
             station_rows_count[sname] = st_count
-            print(f"  ✅ {sname}: {st_count} измерений за последние {hours_back}ч")
+            print(f"  ✅ {sname}: {st_count} observations over the last {hours_back}h")
 
         except Exception as exc:
-            print(f"  ⚠️  Ошибка получения данных датчиков для {sname}: {exc}")
+            print(f"  ⚠️  Sensor data fetch error for {sname}: {exc}")
 
     if batch:
         try:
             sheets.append_actuals_batch(batch)
         except Exception as exc:
-            print(f"  ⚠️  Sheets.append_actuals_batch не удалось выполнить: {exc}")
+            print(f"  ⚠️  Sheets.append_actuals_batch failed: {exc}")
 
     elapsed = (datetime.now() - now).total_seconds()
-    print(f"# Цикл Actuals завершён, всего добавлено {len(batch)} строк ({elapsed:.1f}с)")
+    print(f"# Actuals cycle completed, total appended {len(batch)} rows ({elapsed:.1f}s")
     print(f"{'=' * 70}\n")
 
 
 def _seconds_until_next_run(interval_minutes: int) -> float:
     """
-    Возвращает секунды до следующего запуска, выровненного по сетке.
+    Returns seconds until next scheduled run aligned to grid.
 
-    Например, при interval_minutes=60 следующий запуск — начало следующего часа.
-    При interval_minutes=30 — следующий кратный 30-минутный интервал и т.д.
+    E.g. with interval_minutes=60, next run is top of the next hour.
+    With interval_minutes=30, next run is 30-minute mark, etc.
     """
     now = datetime.now()
-    # Сколько секунд от начала текущих суток прошло
+    # Seconds elapsed since midnight
     seconds_today = now.hour * 3600 + now.minute * 60 + now.second + now.microsecond / 1e6
     interval_sec = interval_minutes * 60
-    # Ближайший будущий кратный момент
+    # Next interval timestamp
     next_boundary = (int(seconds_today / interval_sec) + 1) * interval_sec
     wait = next_boundary - seconds_today
     return wait if wait > 0 else interval_sec
@@ -432,49 +432,49 @@ def _seconds_until_next_run(interval_minutes: int) -> float:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Планировщик записи финальных прогнозов ClimateNet (TFT + PID + Google Sheets)."
+        description="ClimateNet Forecast Persistence Scheduler (TFT + PID + Google Sheets)."
     )
     parser.add_argument(
         "--api-url",
         default="http://127.0.0.1:8000",
-        help="Базовый URL FastAPI-сервера (default: http://127.0.0.1:8000)",
+        help="Base FastAPI server URL (default: http://127.0.0.1:8000)",
     )
     parser.add_argument(
         "--csv-path",
         default="",
-        help="Путь к итоговому CSV (default: weather_data/model_forecasts.csv)",
+        help="Path to output CSV (default: weather_data/model_forecasts.csv)",
     )
     parser.add_argument(
         "--once",
         action="store_true",
-        help="Выполнить один цикл и выйти (режим тестирования)",
+        help="Execute single cycle and exit (test mode)",
     )
     parser.add_argument(
         "--interval",
         type=int,
         default=60,
         metavar="MINUTES",
-        help="Интервал между циклами в минутах (default: 60)",
+        help="Interval between cycles in minutes (default: 60)",
     )
     parser.add_argument(
         "--no-sheets",
         action="store_true",
-        help="Отключить экспорт в Google Sheets",
+        help="Disable Google Sheets export",
     )
     args = parser.parse_args()
 
-    # Загружаем настройки проекта
+    # Load project settings
     settings = load_settings()
 
-    # Путь к CSV
+    # Path to CSV
     csv_path = args.csv_path if args.csv_path else resolve_path("weather_data", "model_forecasts.csv")
 
-    # 1. Инициализируем Google Sheets writer
+    # 1. Initialize Google Sheets writer
     sheets = None
     gs_cfg = settings.get("google_sheets", {})
     if gs_cfg.get("enabled", False) and not args.no_sheets:
         if not _SHEETS_WRITER_AVAILABLE:
-            print("⚠️  sheets_writer.py не найден — Google Sheets отключены.")
+            print("⚠️  sheets_writer.py not found - Google Sheets disabled.")
         else:
             try:
                 creds_file = resolve_path(gs_cfg["credentials_file"])
@@ -486,48 +486,48 @@ def main():
                     actuals_sheet_name=gs_cfg.get("actuals_sheet", "Actuals"),
                 )
             except Exception as exc:
-                print(f"[Google Sheets Warning] Не удалось подключиться: {exc}")
+                print(f"[Google Sheets Warning] Failed to connect: {exc}")
                 sheets = None
 
 
     actuals_interval_hours = gs_cfg.get("actuals_interval_hours", 2)
-    actuals_counter = actuals_interval_hours  # Первый раз запускаем сразу
+    actuals_counter = actuals_interval_hours  # Initial execution immediately
 
     print("=" * 70)
-    print("  ClimateNet — Планировщик записи прогнозов и Google Sheets")
+    print("  ClimateNet - Forecast Persistence & Google Sheets Scheduler")
     print("=" * 70)
-    print(f"  Корень проекта  : {PROJECT_ROOT}")
-    print(f"  API-сервер      : {args.api_url}")
-    print(f"  CSV-файл        : {csv_path}")
-    print(f"  Google Sheets   : {'включены' if sheets else 'отключены'}")
-    print(f"  Actuals каждые  : {actuals_interval_hours} ч")
-    print(f"  Режим           : {'однократный (--once)' if args.once else 'бесконечный цикл'}")
+    print(f"  Project Root    : {PROJECT_ROOT}")
+    print(f"  API Server      : {args.api_url}")
+    print(f"  CSV File        : {csv_path}")
+    print(f"  Google Sheets   : {'enabled' if sheets else 'disabled'}")
+    print(f"  Actuals every   : {actuals_interval_hours} h")
+    print(f"  Mode            : {'single run (--once)' if args.once else 'continuous loop'}")
     print("=" * 70)
 
-    # Первый запуск Forecasts
+    # Initial run: Forecasts
     run_cycle(args.api_url, csv_path, settings, sheets=sheets)
 
-    # Первый запуск Actuals
+    # Initial run: Actuals
     if sheets is not None:
         run_actuals_cycle(sheets, settings)
         actuals_counter = 0
 
     if args.once:
-        print("✅ Однократный тестовый запуск завершён.")
+        print("✅ Single test execution complete.")
         return
 
-    # Бесконечный цикл
+    # Continuous loop
     while True:
         wait_sec = _seconds_until_next_run(args.interval)
         next_time = datetime.now() + timedelta(seconds=wait_sec)
         print(
-            f"⏳ Следующий цикл: {next_time.strftime('%Y-%m-%d %H:%M:%S')} "
-            f"(через {wait_sec / 60:.1f} мин)"
+            f"⏳ Next cycle: {next_time.strftime('%Y-%m-%d %H:%M:%S')} "
+            f"(in {wait_sec / 60:.1f} min)"
         )
         try:
             time.sleep(wait_sec)
         except KeyboardInterrupt:
-            print("\n\nОстановлено пользователем (Ctrl+C). До свидания!")
+            print("\n\nStopped by user (Ctrl+C). Goodbye!")
             sys.exit(0)
 
         run_cycle(args.api_url, csv_path, settings, sheets=sheets)
